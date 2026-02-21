@@ -17,8 +17,6 @@
 - [ ] `send` — tmux send-keys with base64 encoding (port safety logic from current impl)
   - Verify claude is running before sending (ps check on tmux pane TTY)
   - Support `--file` flag to send file contents
-- [ ] `read` — tmux capture-pane fallback (raw terminal output)
-- [ ] `attach` — thin wrapper around `tmux attach -t dev-<id>`
 - [ ] `kill` — tmux kill-session + update store
 - [ ] `list` — read store, prune dead tmux sessions, display table
 
@@ -38,6 +36,19 @@
   - Or timeout reached
   - Poll interval: check file mtime every 2-3 seconds
 
+## Phase 2b: Docker Integration (P0 — required for initial release)
+
+Docker-to-host support is required for the primary use case (agents running inside claude-ting Docker containers).
+
+- [ ] Thin HTTP relay gateway (port from current gateway, strip to essentials)
+  - Endpoints: `/create`, `/send`, `/kill`, `/list`, `/status`, `/wait`, `/last-message`
+  - No database in gateway — relay commands to host-side CLI
+  - Gateway runs on host, listens on port 6767
+- [ ] CLI auto-detection: if `IS_SANDBOX=1`, route commands through gateway at `DEV_SESSIONS_GATEWAY_URL` (default `http://host.docker.internal:6767`)
+- [ ] `HOST_PATH` → host workspace path mapping for transcript file resolution
+- [ ] Gateway can also be run as a simple `dev-sessions gateway` subcommand (no separate install)
+- [ ] Integration with claude-ting: document how `clauded`/`codexed` set `HOST_PATH` and gateway URL
+
 ## Phase 3: Codex Backend (app-server)
 
 - [ ] Research: pin down exact `codex app-server` invocation and handshake
@@ -51,34 +62,24 @@
 - [ ] `kill` — terminate app-server process + update store
 - [ ] Decide: one app-server per session, or shared app-server with multiple threads?
 
-## Phase 2b: Docker Integration (P0 — required for initial release)
+## Phase 4: Skill & Polish
 
-Docker-to-host support is required for the primary use case (agents running inside claude-ting Docker containers).
-
-- [ ] Thin HTTP relay gateway (port from current gateway, strip to essentials)
-  - Endpoints: `/create`, `/send`, `/read`, `/kill`, `/list`, `/status`, `/wait`, `/last-message`
-  - No database in gateway — relay commands to host-side CLI
-  - Gateway runs on host, listens on port 6767
-- [ ] CLI auto-detection: if `IS_SANDBOX=1`, route commands through gateway at `DEV_SESSIONS_GATEWAY_URL` (default `http://host.docker.internal:6767`)
-- [ ] `HOST_PATH` → host workspace path mapping for transcript file resolution
-- [ ] Gateway Dockerfile + docker-compose (lightweight, no SSH needed since gateway runs on host)
-- [ ] Integration with claude-ting: document how `clauded`/`codexed` set `HOST_PATH` and gateway URL
-- [ ] Gateway can also be run as a simple `dev-sessions gateway` subcommand (no separate install)
-
-## Phase 5: Skill & Polish
-
-- [ ] Write `/delegate` skill for Claude Code
+- [ ] Write `/dev-sessions` skill (SKILL.md)
   - When to delegate vs do it yourself
   - How to write good task briefs (context, files, constraints, acceptance criteria)
   - Polling strategy guidance (prefer `wait`, fallback to `status` + `last-message`)
   - Fan-out patterns for parallel work
   - Anti-patterns (delegating trivial tasks, insufficient context)
-- [ ] `install-skill` command (copies skill to `~/.claude/skills/`)
+- [ ] `install-skill` command (follows jupyter-cli pattern)
+  - Support `--global` (~/.<tool>/skills/) and `--local` (./<tool>/skills/)
+  - Support `--claude` and `--codex` flags
+  - Auto-detect available tools (~/.claude exists? ~/.codex exists?)
+  - Default to global install with auto-detect
+  - Skill installed as `dev-sessions/SKILL.md` in both tool skill dirs
 - [ ] Pretty output formatting (tables for `list`, colored status indicators)
 - [ ] `--quiet` / `-q` flag for scriptable output (just print session ID)
-- [ ] `--json` flag (optional, for programmatic consumption if needed)
 
-## Phase 6: Advanced Features (future)
+## Phase 5: Advanced Features (future)
 
 - [ ] `send --file` with template variables (inject session context)
 - [ ] `wait` with multiple session IDs (wait for all/any)
@@ -99,7 +100,7 @@ Docker-to-host support is required for the primary use case (agents running insi
 - [ ] CLI argument parsing: all commands, flags, defaults, validation
 
 ### Integration Tests (require tmux installed)
-- [ ] tmux session lifecycle: create → verify exists → send keys → capture output → kill
+- [ ] tmux session lifecycle: create → verify exists → send keys → kill
 - [ ] Base64 message encoding/decoding through tmux
 - [ ] CLI running detection (ps check on pane TTY)
 - [ ] Transcript file discovery (create session, verify file appears at expected path)

@@ -113,7 +113,5 @@ npm link  # for local testing
 | `last-message <id>` | Get last N assistant messages from transcript |
 | `status <id>` | Check session status (idle/working/waiting) |
 | `list` | List all active sessions |
-| `attach <id>` | Attach to tmux session (Claude Code only) |
-| `read <id>` | Raw terminal output fallback (Claude Code only) |
 | `kill <id>` | Terminate a session |
-| `install-skill` | Install the /delegate skill for Claude Code |
+| `install-skill` | Install the /dev-sessions skill for Claude Code and/or Codex |

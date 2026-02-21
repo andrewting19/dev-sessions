@@ -62,9 +62,6 @@ dev-sessions wait $s1 $s2
 dev-sessions last-message $s1
 dev-sessions last-message $s2
 
-# Attach to see what's happening (Claude Code/tmux sessions only)
-dev-sessions attach fizz-top
-
 # Clean up
 dev-sessions kill fizz-top
 ```
@@ -84,12 +81,15 @@ npm install && npm run build && npm link
 
 ### Skill Installation (Optional)
 
-Install the Claude Code skill for guided delegation workflows:
+Install the `/dev-sessions` skill for Claude Code and/or Codex:
 ```bash
-dev-sessions install-skill
+dev-sessions install-skill --global            # Auto-detect available tools
+dev-sessions install-skill --global --claude    # Claude Code only
+dev-sessions install-skill --global --codex     # Codex CLI only
+dev-sessions install-skill --local              # Current directory only
 ```
 
-This adds a `/delegate` skill to `~/.claude/skills/` that teaches agents best practices for task delegation.
+The skill teaches agents best practices for task delegation, polling strategies, and fan-out patterns.
 
 ## Modes
 
