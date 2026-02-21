@@ -26,10 +26,11 @@ When creating a Claude Code session, we generate a UUID and pass it via `claude 
 Sessions get human-readable IDs like `fizz-top`, `riven-jg` (League of Legends champion + role). These map to internal UUIDs/thread IDs but are easier to type and remember.
 
 ### 6. Decoupled from claude-ting
-This is a standalone tool. Docker integration (for claude-ting's `clauded`/`codexed` wrappers) is optional and handled via:
+This is a standalone tool. Docker integration (for claude-ting's `clauded` wrapper) is optional and handled via:
 - `IS_SANDBOX=1` env var detection (signals we're in Docker)
 - `HOST_PATH` env var (maps container workspace to host path)
 - A thin HTTP gateway relay for Docker-to-host communication
+- Docker integration is for Claude Code sessions only (Codex uses app-server natively)
 
 ## Architecture
 
@@ -42,13 +43,12 @@ dev-sessions CLI
 │   │   ├── claude-tmux.ts     # Claude Code: tmux + transcript parsing
 │   │   └── codex-appserver.ts # Codex: app-server JSON-RPC client
 │   ├── transcript/
-│   │   ├── claude-parser.ts   # Parse Claude Code JSONL transcripts
-│   │   └── codex-parser.ts    # Parse Codex responses from app-server
+│   │   └── claude-parser.ts   # Parse Claude Code JSONL transcripts
 │   ├── session-store.ts       # SQLite or JSON file for session metadata
 │   ├── champion-ids.ts        # Human-friendly ID generation
 │   └── gateway-client.ts      # Optional: HTTP relay for Docker environments
 ├── skill/
-│   └── delegate.md            # Claude Code skill for guided delegation
+│   └── SKILL.md               # /dev-sessions skill for Claude Code and Codex
 ├── gateway/                   # Optional: thin HTTP relay for Docker
 │   └── ...
 └── tests/
@@ -62,8 +62,7 @@ dev-sessions CLI
   - Sanitized CWD: path with `/` replaced by `-`, e.g., `-Users-andrew-Documents-git-repos-myproject`
   - Each line is a JSON object with `type` (human/user/assistant), `message.content`, `sessionId`, timestamps
 
-- **Codex**: `~/.codex/sessions/{YYYY}/{MM}/{DD}/rollout-*.jsonl`
-  - But with app-server, we get structured responses directly — no file parsing needed
+- **Codex**: Structured responses directly from app-server (no transcript file parsing needed)
 
 ## Claude Code Transcript Format (key fields)
 

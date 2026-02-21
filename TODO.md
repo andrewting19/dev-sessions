@@ -47,7 +47,8 @@ Docker-to-host support is required for the primary use case (agents running insi
 - [ ] CLI auto-detection: if `IS_SANDBOX=1`, route commands through gateway at `DEV_SESSIONS_GATEWAY_URL` (default `http://host.docker.internal:6767`)
 - [ ] `HOST_PATH` → host workspace path mapping for transcript file resolution
 - [ ] Gateway can also be run as a simple `dev-sessions gateway` subcommand (no separate install)
-- [ ] Integration with claude-ting: document how `clauded`/`codexed` set `HOST_PATH` and gateway URL
+- [ ] Integration with claude-ting: document how `clauded` sets `HOST_PATH` and gateway URL
+- [ ] Note: Docker gateway is for Claude Code sessions only (Codex uses app-server natively on host)
 
 ## Phase 3: Codex Backend (app-server)
 
@@ -86,6 +87,7 @@ Docker-to-host support is required for the primary use case (agents running insi
 - [ ] Session groups (named collections for fan-out workflows)
 - [ ] Auto-cleanup: kill sessions older than N hours
 - [ ] `logs` command — full transcript dump with formatting
+- [ ] Codex Docker support (`codexed` + tmux + transcript parsing) — P2
 
 ---
 
