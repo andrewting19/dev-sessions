@@ -54,7 +54,10 @@ export class SessionManager {
         path: workspacePath,
         description: options.description,
         status: 'active',
+        appServerPid: codexSession.appServerPid,
+        appServerPort: codexSession.appServerPort,
         model: codexSession.model,
+        codexTurnInProgress: false,
         lastAssistantMessages: [],
         createdAt: timestamp,
         lastUsed: timestamp
@@ -86,19 +89,52 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      const sendResult = await this.codexBackend.sendMessage(session.championId, session.internalId, message, {
-        workspacePath: session.path,
-        model: session.model
+      const turnStartTime = new Date().toISOString();
+      await this.store.updateSession(championId, {
+        lastUsed: turnStartTime,
+        status: 'active',
+        codexTurnInProgress: true,
+        lastTurnStatus: undefined,
+        lastTurnError: undefined
       });
+
+      let sendResult: Awaited<ReturnType<CodexAppServerBackend['sendMessage']>>;
+      try {
+        sendResult = await this.codexBackend.sendMessage(session.championId, session.internalId, message, {
+          workspacePath: session.path,
+          model: session.model
+        });
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          const latestSession = await this.store.getSession(championId);
+          if (latestSession?.cli === 'codex' && latestSession.codexTurnInProgress === true) {
+            await this.store.updateSession(championId, {
+              codexTurnInProgress: false,
+              lastTurnStatus: 'failed',
+              lastTurnError: error.message,
+              lastUsed: new Date().toISOString()
+            });
+          }
+        }
+
+        throw error;
+      }
+
       const nextAssistantMessages =
         sendResult.assistantMessage.length > 0
           ? [...(session.lastAssistantMessages ?? []), sendResult.assistantMessage]
           : [...(session.lastAssistantMessages ?? [])];
+      const completionTime = new Date().toISOString();
+      const turnStillInProgress = sendResult.timedOut;
 
       await this.store.updateSession(championId, {
         internalId: sendResult.threadId,
-        lastUsed: new Date().toISOString(),
+        appServerPid: sendResult.appServerPid,
+        appServerPort: sendResult.appServerPort,
+        lastUsed: completionTime,
         status: 'active',
+        codexTurnInProgress: turnStillInProgress,
+        codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
         lastTurnStatus: sendResult.status,
         lastTurnError: sendResult.errorMessage,
         lastAssistantMessages: nextAssistantMessages
@@ -133,7 +169,12 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      await this.codexBackend.killSession(session.championId, session.appServerPid);
+      await this.codexBackend.killSession(
+        session.championId,
+        session.appServerPid,
+        session.internalId,
+        session.appServerPort
+      );
     } else {
       const tmuxSessionName = toTmuxSessionName(session.championId);
 
@@ -150,6 +191,10 @@ export class SessionManager {
     }
 
     await this.store.deleteSession(championId);
+
+    if (session.cli === 'codex' && !(await this.hasActiveCodexSessions())) {
+      await this.codexBackend.stopAppServer();
+    }
   }
 
   async listSessions(): Promise<StoredSession[]> {
@@ -159,17 +204,34 @@ export class SessionManager {
         championId: session.championId,
         exists:
           session.cli === 'codex'
-            ? await this.codexBackend.sessionExists(session.championId, session.appServerPid)
+            ? await this.codexBackend.sessionExists(session.championId, session.appServerPid, session.appServerPort)
             : await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId))
       }))
     );
 
-    const deadSessionIds = livenessChecks
-      .filter((check) => !check.exists)
-      .map((check) => check.championId);
+    const deadSessions = sessions.filter((session) =>
+      livenessChecks.some((check) => check.championId === session.championId && !check.exists)
+    );
+    const deadCodexSessionIds = deadSessions
+      .filter((session) => session.cli === 'codex')
+      .map((session) => session.championId);
+    const deadNonCodexSessionIds = deadSessions
+      .filter((session) => session.cli !== 'codex')
+      .map((session) => session.championId);
 
-    if (deadSessionIds.length > 0) {
-      await this.store.pruneSessions(deadSessionIds);
+    if (deadCodexSessionIds.length > 0) {
+      await Promise.all(
+        deadCodexSessionIds.map(async (deadSessionId) => {
+          await this.store.updateSession(deadSessionId, {
+            status: 'inactive',
+            codexTurnInProgress: false
+          });
+        })
+      );
+    }
+
+    if (deadNonCodexSessionIds.length > 0) {
+      await this.store.pruneSessions(deadNonCodexSessionIds);
     }
 
     return (await this.store.listSessions()).filter((session) => session.status === 'active');
@@ -199,13 +261,13 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
+      if (session.codexTurnInProgress) {
+        return 'working';
+      }
+
       if (session.lastTurnStatus === 'failed') {
         const suffix = session.lastTurnError ? `: ${session.lastTurnError}` : '';
         throw new Error(`Codex turn failed${suffix}`);
-      }
-
-      if (session.lastTurnStatus === 'interrupted') {
-        return 'working';
       }
 
       return 'idle';
@@ -222,8 +284,10 @@ export class SessionManager {
 
     if (session.cli === 'codex') {
       const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
+      const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
+      const startTime = Date.now();
 
-      if (session.lastTurnStatus === 'failed') {
+      if (!session.codexTurnInProgress && session.lastTurnStatus === 'failed') {
         const message = session.lastTurnError
           ? `Codex turn failed: ${session.lastTurnError}`
           : 'Codex turn failed';
@@ -234,18 +298,52 @@ export class SessionManager {
         lastUsed: new Date().toISOString()
       });
 
-      if (session.lastTurnStatus === 'interrupted') {
+      if (!session.codexTurnInProgress) {
+        if (session.lastTurnStatus === 'interrupted') {
+          return {
+            completed: false,
+            timedOut: true,
+            elapsedMs: timeoutMs
+          };
+        }
+
         return {
-          completed: false,
-          timedOut: true,
-          elapsedMs: timeoutMs
+          completed: true,
+          timedOut: false,
+          elapsedMs: 0
         };
       }
 
+      const deadline = startTime + timeoutMs;
+
+      while (Date.now() <= deadline) {
+        const latestSession = await this.requireSession(championId);
+        if (latestSession.cli !== 'codex') {
+          throw new Error(`Session ${championId} is no longer a Codex session`);
+        }
+
+        if (!latestSession.codexTurnInProgress) {
+          if (latestSession.lastTurnStatus === 'failed') {
+            const message = latestSession.lastTurnError
+              ? `Codex turn failed: ${latestSession.lastTurnError}`
+              : 'Codex turn failed';
+            throw new Error(message);
+          }
+
+          return {
+            completed: latestSession.lastTurnStatus !== 'interrupted',
+            timedOut: latestSession.lastTurnStatus === 'interrupted',
+            elapsedMs: Date.now() - startTime
+          };
+        }
+
+        await this.sleep(intervalMs);
+      }
+
       return {
-        completed: true,
-        timedOut: false,
-        elapsedMs: 0
+        completed: false,
+        timedOut: true,
+        elapsedMs: Date.now() - startTime
       };
     }
 
@@ -342,6 +440,11 @@ export class SessionManager {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
     });
+  }
+
+  private async hasActiveCodexSessions(): Promise<boolean> {
+    const sessions = await this.store.listSessions();
+    return sessions.some((session) => session.status === 'active' && session.cli === 'codex');
   }
 
   private hasAssistantResponseAtOrAfter(

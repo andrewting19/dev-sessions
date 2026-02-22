@@ -29,7 +29,10 @@ function isStoredSession(value: unknown): value is StoredSession {
     (candidate.description === undefined || typeof candidate.description === 'string') &&
     (candidate.status === 'active' || candidate.status === 'inactive') &&
     (candidate.appServerPid === undefined || Number.isInteger(candidate.appServerPid)) &&
+    (candidate.appServerPort === undefined || Number.isInteger(candidate.appServerPort)) &&
     (candidate.model === undefined || typeof candidate.model === 'string') &&
+    (candidate.codexTurnInProgress === undefined || typeof candidate.codexTurnInProgress === 'boolean') &&
+    (candidate.codexLastCompletedAt === undefined || typeof candidate.codexLastCompletedAt === 'string') &&
     (candidate.lastTurnStatus === undefined ||
       candidate.lastTurnStatus === 'completed' ||
       candidate.lastTurnStatus === 'failed' ||

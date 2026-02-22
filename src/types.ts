@@ -17,7 +17,10 @@ export interface StoredSession {
   description?: string;
   status: SessionStatus;
   appServerPid?: number;
+  appServerPort?: number;
   model?: string;
+  codexTurnInProgress?: boolean;
+  codexLastCompletedAt?: string;
   lastTurnStatus?: CodexTurnStatus;
   lastTurnError?: string;
   lastAssistantMessages?: string[];

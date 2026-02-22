@@ -1,191 +1,204 @@
-import { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
-import { CodexAppServerBackend } from '../../src/backends/codex-appserver';
+import { describe, expect, it } from 'vitest';
+import {
+  CodexAppServerBackend,
+  CodexAppServerDaemonManager,
+  CodexAppServerInfo,
+  CodexRpcClient,
+  CodexTurnWaitResult
+} from '../../src/backends/codex-appserver';
 
-interface RpcMessage {
-  id?: number;
-  method?: string;
-  params?: Record<string, unknown>;
+interface RecordedRequest {
+  method: string;
+  params?: unknown;
 }
 
-class FakeCodexProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
-  readonly pid: number;
-  exitCode: number | null = null;
-  signalCode: NodeJS.Signals | null = null;
-  readonly killSignals: Array<NodeJS.Signals | number | undefined> = [];
+interface FakeClientScript {
+  onRequest?: (method: string, params: unknown, requestIndex: number) => unknown | Promise<unknown>;
+  waitResult?: CodexTurnWaitResult;
+  currentTurnText?: string;
+  connectError?: Error;
+}
 
-  constructor(pid: number) {
-    super();
-    this.pid = pid;
+class FakeRpcClient implements CodexRpcClient {
+  readonly requests: RecordedRequest[] = [];
+  connectCalls = 0;
+  closeCalls = 0;
+  currentTurnText = '';
+  lastTurnStatus?: CodexTurnWaitResult['status'];
+  lastTurnError?: string;
+
+  constructor(private readonly script: FakeClientScript) {
+    this.currentTurnText = script.currentTurnText ?? '';
+    this.lastTurnStatus = script.waitResult?.status;
+    this.lastTurnError = script.waitResult?.errorMessage;
   }
 
-  kill(signal?: NodeJS.Signals | number): boolean {
-    this.killSignals.push(signal);
-    if (typeof signal === 'string') {
-      this.signalCode = signal;
+  async connectAndInitialize(): Promise<void> {
+    this.connectCalls += 1;
+    if (this.script.connectError) {
+      throw this.script.connectError;
     }
-    this.emit('exit', this.exitCode, this.signalCode);
-    return true;
   }
 
-  emitJson(payload: unknown): void {
-    this.stdout.write(`${JSON.stringify(payload)}\n`);
+  async request(method: string, params?: unknown): Promise<unknown> {
+    this.requests.push({ method, params });
+    const response = await this.script.onRequest?.(method, params, this.requests.length - 1);
+    return response;
+  }
+
+  async waitForTurnCompletion(_timeoutMs: number): Promise<CodexTurnWaitResult> {
+    const result =
+      this.script.waitResult ??
+      ({
+        completed: true,
+        timedOut: false,
+        elapsedMs: 10,
+        status: 'completed'
+      } satisfies CodexTurnWaitResult);
+
+    this.lastTurnStatus = result.status;
+    this.lastTurnError = result.errorMessage;
+    return result;
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
   }
 }
 
-function createBackendHarness(
-  onOutgoingMessage: (message: RpcMessage, proc: FakeCodexProcess, processIndex: number) => void
-): {
+class FakeDaemonManager implements CodexAppServerDaemonManager {
+  ensureCalls = 0;
+  getServerCalls = 0;
+  resetCalls: CodexAppServerInfo[] = [];
+  stopCalls = 0;
+  isRunningCalls: Array<{ pid?: number; port?: number }> = [];
+  running = true;
+  server: CodexAppServerInfo = {
+    pid: 9001,
+    port: 4510,
+    url: 'ws://127.0.0.1:4510'
+  };
+
+  async ensureServer(): Promise<CodexAppServerInfo> {
+    this.ensureCalls += 1;
+    return this.server;
+  }
+
+  async getServer(): Promise<CodexAppServerInfo | undefined> {
+    this.getServerCalls += 1;
+    return this.running ? this.server : undefined;
+  }
+
+  async isServerRunning(pid?: number, port?: number): Promise<boolean> {
+    this.isRunningCalls.push({ pid, port });
+    return this.running;
+  }
+
+  async resetServer(server?: CodexAppServerInfo): Promise<void> {
+    if (server) {
+      this.resetCalls.push(server);
+    }
+    this.running = false;
+  }
+
+  async stopServer(): Promise<void> {
+    this.stopCalls += 1;
+    this.running = false;
+  }
+}
+
+function createHarness(scripts: FakeClientScript[]): {
   backend: CodexAppServerBackend;
-  processes: FakeCodexProcess[];
-  outgoingMessages: Array<{ processIndex: number; message: RpcMessage }>;
+  daemon: FakeDaemonManager;
+  clients: FakeRpcClient[];
 } {
-  const processes: FakeCodexProcess[] = [];
-  const outgoingMessages: Array<{ processIndex: number; message: RpcMessage }> = [];
+  const daemon = new FakeDaemonManager();
+  const clients: FakeRpcClient[] = [];
+  let scriptIndex = 0;
 
-  const backend = new CodexAppServerBackend(() => {
-    const processIndex = processes.length;
-    const process = new FakeCodexProcess(9000 + processIndex);
-    processes.push(process);
-
-    let buffered = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk: string | Buffer) => {
-      buffered += chunk.toString();
-      const lines = buffered.split('\n');
-      buffered = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) {
-          continue;
-        }
-
-        const message = JSON.parse(trimmed) as RpcMessage;
-        outgoingMessages.push({
-          processIndex,
-          message
-        });
-        onOutgoingMessage(message, process, processIndex);
-      }
-    });
-
-    return process as unknown as ChildProcessWithoutNullStreams;
+  const backend = new CodexAppServerBackend({
+    daemonManager: daemon,
+    clientFactory: () => {
+      const script = scripts[scriptIndex] ?? {};
+      scriptIndex += 1;
+      const client = new FakeRpcClient(script);
+      clients.push(client);
+      return client;
+    }
   });
 
   return {
     backend,
-    processes,
-    outgoingMessages
+    daemon,
+    clients
   };
 }
 
 describe('CodexAppServerBackend', () => {
-  it('builds initialize -> initialized -> thread/start JSON-RPC messages', async () => {
-    const { backend, outgoingMessages } = createBackendHarness((message, proc) => {
-      if (typeof message.id !== 'number') {
-        return;
-      }
-
-      if (message.method === 'initialize') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {}
-        });
-      }
-
-      if (message.method === 'thread/start') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            thread: {
-              id: 'thr_123'
-            }
+  it('creates a thread through the shared daemon and returns daemon connection info', async () => {
+    const { backend, daemon, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return {
+              thread: {
+                id: 'thr_123'
+              }
+            };
           }
-        });
+
+          return {};
+        }
       }
-    });
+    ]);
 
     const created = await backend.createSession('fizz-top', '/tmp/workspace', 'gpt-5.3-codex');
 
     expect(created).toEqual({
       threadId: 'thr_123',
-      model: 'gpt-5.3-codex'
+      model: 'gpt-5.3-codex',
+      appServerPid: daemon.server.pid,
+      appServerPort: daemon.server.port
     });
-
-    const methods = outgoingMessages
-      .filter((entry) => entry.processIndex === 0)
-      .map((entry) => entry.message.method);
-    expect(methods).toEqual(['initialize', 'initialized', 'thread/start']);
+    expect(daemon.ensureCalls).toBe(1);
+    expect(clients).toHaveLength(1);
+    expect(clients[0].connectCalls).toBe(1);
+    expect(clients[0].closeCalls).toBe(1);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start']);
   });
 
-  it('resumes thread and accumulates agent delta notifications into one message', async () => {
-    const { backend, outgoingMessages } = createBackendHarness((message, proc, processIndex) => {
-      if (processIndex === 0) {
-        if (typeof message.id === 'number' && message.method === 'initialize') {
-          proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-        }
-        if (typeof message.id === 'number' && message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
+  it('resumes a thread and accumulates the assistant message for session history', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return {
               thread: {
                 id: 'thr_seed'
               }
-            }
-          });
-        }
-        return;
-      }
+            };
+          }
 
-      if (typeof message.id === 'number' && message.method === 'initialize') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-      if (typeof message.id === 'number' && message.method === 'thread/resume') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-      if (typeof message.id === 'number' && message.method === 'turn/start') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-        proc.emitJson({
-          jsonrpc: '2.0',
-          method: 'item/agentMessage/delta',
-          params: {
-            delta: {
-              text: 'Done '
-            }
+          return {};
+        }
+      },
+      {
+        currentTurnText: 'Done here',
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 42,
+          status: 'completed'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume' || method === 'turn/start') {
+            return {};
           }
-        });
-        proc.emitJson({
-          jsonrpc: '2.0',
-          method: 'item/agentMessage/delta',
-          params: {
-            item: {
-              delta: {
-                text: 'here'
-              }
-            }
-          }
-        });
-        proc.emitJson({
-          jsonrpc: '2.0',
-          method: 'turn/completed',
-          params: {
-            turn: {
-              id: 'turn_1',
-              status: 'completed'
-            }
-          }
-        });
+
+          throw new Error(`Unexpected method: ${method}`);
+        }
       }
-    });
+    ]);
 
     const created = await backend.createSession('riven-jg', '/tmp/repo', 'gpt-5.3-codex');
     const sendResult = await backend.sendMessage('riven-jg', created.threadId, 'Write tests', {
@@ -200,61 +213,42 @@ describe('CodexAppServerBackend', () => {
       status: 'completed',
       assistantMessage: 'Done here'
     });
-
-    const sendMethods = outgoingMessages
-      .filter((entry) => entry.processIndex === 1)
-      .map((entry) => entry.message.method);
-    expect(sendMethods).toEqual(['initialize', 'initialized', 'thread/resume', 'turn/start']);
+    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'turn/start']);
     expect(backend.getLastAssistantMessages('riven-jg', 1)).toEqual(['Done here']);
     expect(backend.getSessionStatus('riven-jg')).toBe('idle');
   });
 
-  it('falls back to thread/start when thread/resume cannot find the rollout', async () => {
-    const { backend, outgoingMessages } = createBackendHarness((message, proc) => {
-      if (typeof message.id !== 'number') {
-        return;
-      }
-
-      if (message.method === 'initialize') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-
-      if (message.method === 'thread/resume') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          error: {
-            message: 'no rollout found for thread id stale-thread'
+  it('falls back to thread/start when thread/resume reports a missing thread', async () => {
+    const { backend, clients } = createHarness([
+      {
+        currentTurnText: '',
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 21,
+          status: 'completed'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            throw new Error('thread/resume failed: no rollout found for thread id stale-thread');
           }
-        });
-      }
 
-      if (message.method === 'thread/start') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            thread: {
-              id: 'thr_fallback'
-            }
+          if (method === 'thread/start') {
+            return {
+              thread: {
+                id: 'thr_fallback'
+              }
+            };
           }
-        });
-      }
 
-      if (message.method === 'turn/start') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-        proc.emitJson({
-          jsonrpc: '2.0',
-          method: 'turn/completed',
-          params: {
-            turn: {
-              id: 'turn_done',
-              status: 'completed'
-            }
+          if (method === 'turn/start') {
+            return {};
           }
-        });
+
+          throw new Error(`Unexpected method: ${method}`);
+        }
       }
-    });
+    ]);
 
     const result = await backend.sendMessage('fizz-top', 'stale-thread', 'Ship this feature', {
       workspacePath: '/tmp/workspace',
@@ -263,55 +257,39 @@ describe('CodexAppServerBackend', () => {
 
     expect(result.threadId).toBe('thr_fallback');
     expect(result.status).toBe('completed');
-
-    expect(outgoingMessages.map((entry) => entry.message.method)).toEqual([
-      'initialize',
-      'initialized',
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual([
       'thread/resume',
       'thread/start',
       'turn/start'
     ]);
   });
 
-  it('captures failed turn completion and reports failed status', async () => {
-    const { backend } = createBackendHarness((message, proc) => {
-      if (typeof message.id !== 'number') {
-        return;
-      }
-
-      if (message.method === 'initialize') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-
-      if (message.method === 'thread/start') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            thread: {
-              id: 'thr_failed'
+  it('captures failed turn completion and exposes failed status via helpers', async () => {
+    const { backend } = createHarness([
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 8,
+          status: 'failed',
+          errorMessage: 'tool execution failed'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/start' || method === 'turn/start') {
+            if (method === 'thread/start') {
+              return {
+                thread: {
+                  id: 'thr_failed'
+                }
+              };
             }
+            return {};
           }
-        });
-      }
 
-      if (message.method === 'turn/start') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-        proc.emitJson({
-          jsonrpc: '2.0',
-          method: 'turn/completed',
-          params: {
-            turn: {
-              id: 'turn_failed',
-              status: 'failed',
-              error: {
-                message: 'tool execution failed'
-              }
-            }
-          }
-        });
+          throw new Error(`Unexpected method: ${method}`);
+        }
       }
-    });
+    ]);
 
     const result = await backend.sendMessage('ahri-mid', '', 'Break intentionally', {
       workspacePath: '/tmp/repo'
@@ -330,41 +308,38 @@ describe('CodexAppServerBackend', () => {
     });
   });
 
-  it('returns timedOut when turn completion is never emitted before timeout', async () => {
-    vi.useFakeTimers();
-
-    const { backend } = createBackendHarness((message, proc) => {
-      if (typeof message.id !== 'number') {
-        return;
-      }
-
-      if (message.method === 'initialize') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-
-      if (message.method === 'thread/start') {
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            thread: {
-              id: 'thr_timeout'
-            }
+  it('returns timedOut when waitForTurnCompletion reports a timeout', async () => {
+    const { backend } = createHarness([
+      {
+        waitResult: {
+          completed: false,
+          timedOut: true,
+          elapsedMs: 25,
+          status: 'interrupted',
+          errorMessage: 'Timed out waiting for Codex turn completion'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return {
+              thread: {
+                id: 'thr_timeout'
+              }
+            };
           }
-        });
-      }
 
-      if (message.method === 'turn/start') {
-        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
-      }
-    });
+          if (method === 'turn/start') {
+            return {};
+          }
 
-    const sendPromise = backend.sendMessage('teemo-sup', '', 'This should time out', {
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const sendResult = await backend.sendMessage('teemo-sup', '', 'This should time out', {
       workspacePath: '/tmp/repo',
       timeoutMs: 25
     });
-    await vi.advanceTimersByTimeAsync(25);
-    const sendResult = await sendPromise;
 
     expect(sendResult).toMatchObject({
       completed: false,
@@ -372,20 +347,87 @@ describe('CodexAppServerBackend', () => {
       status: 'interrupted'
     });
     expect(backend.getSessionStatus('teemo-sup')).toBe('working');
-    vi.useRealTimers();
   });
 
-  it('treats missing PID as an existing logical session and kills provided PID', async () => {
-    const { backend } = createBackendHarness(() => {
-      // no-op
-    });
+  it('archives threads on kill and delegates shared daemon lifecycle checks', async () => {
+    const { backend, daemon, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/archive') {
+            return {};
+          }
+
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
 
     expect(await backend.sessionExists('fizz-top')).toBe(true);
+    expect(await backend.sessionExists('fizz-top', daemon.server.pid, daemon.server.port)).toBe(true);
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-    await backend.killSession('fizz-top', 4321);
+    await backend.killSession('fizz-top', daemon.server.pid, 'thr_to_archive', daemon.server.port);
+    expect(daemon.getServerCalls).toBe(1);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/archive']);
 
-    expect(killSpy).toHaveBeenCalledWith(4321, 'SIGTERM');
-    killSpy.mockRestore();
+    await backend.stopAppServer();
+    expect(daemon.stopCalls).toBe(1);
+  });
+
+  it('resets and retries when the first daemon connection fails', async () => {
+    const { backend, daemon, clients } = createHarness([
+      {
+        connectError: new Error('socket hang up')
+      },
+      {
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return {
+              thread: {
+                id: 'thr_retry'
+              }
+            };
+          }
+          return {};
+        }
+      }
+    ]);
+
+    const created = await backend.createSession('fizz-top', '/tmp/workspace');
+
+    expect(created.threadId).toBe('thr_retry');
+    expect(daemon.resetCalls).toHaveLength(1);
+    expect(clients).toHaveLength(2);
+  });
+
+  it('does not archive when the stored daemon PID/port no longer matches the active daemon', async () => {
+    const { backend, daemon, clients } = createHarness([]);
+
+    daemon.server = {
+      pid: 9999,
+      port: 5001,
+      url: 'ws://127.0.0.1:5001'
+    };
+
+    await backend.killSession('fizz-top', 4321, 'thr_stale', 4510);
+
+    expect(daemon.getServerCalls).toBe(1);
+    expect(clients).toHaveLength(0);
+  });
+
+  it('ignores thread/archive not-found errors during kill', async () => {
+    const { backend, daemon } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/archive') {
+            throw new Error('thread/archive failed: thread not found');
+          }
+          return {};
+        }
+      }
+    ]);
+
+    await expect(
+      backend.killSession('fizz-top', daemon.server.pid, 'thr_missing', daemon.server.port)
+    ).resolves.toBeUndefined();
   });
 });
