@@ -160,15 +160,20 @@ describe('GatewaySessionManager', () => {
     expect(fetchSpy.mock.calls[4][0]).toBe('http://gateway.test:6767/kill');
   });
 
-  it('bubbles up fetch/network failures when gateway is unreachable', async () => {
+  it('adds gateway URL and startup hint for fetch/network failures', async () => {
     const fetchSpy = vi.fn(async () => {
-      throw new Error('connect ECONNREFUSED 127.0.0.1:6767');
+      throw new TypeError('fetch failed');
     });
     const manager = new GatewaySessionManager({
       baseUrl: 'http://127.0.0.1:6767',
       fetchFn: fetchSpy as unknown as typeof fetch
     });
 
-    await expect(manager.listSessions()).rejects.toThrow('ECONNREFUSED');
+    await expect(manager.listSessions()).rejects.toThrow(
+      'Gateway request failed for http://127.0.0.1:6767/list'
+    );
+    await expect(manager.listSessions()).rejects.toThrow(
+      'Is the gateway running? Start it with: dev-sessions gateway --port <port>'
+    );
   });
 });

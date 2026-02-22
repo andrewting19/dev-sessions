@@ -73,6 +73,28 @@ describe('gateway server', () => {
     expect(executeCommand).not.toHaveBeenCalled();
   });
 
+  it('logs request method path status and duration', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const executeCommand = vi.fn<GatewayCommandExecutor>();
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/health`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+
+    const requestLogLine = logSpy.mock.calls
+      .map((call) => call[0])
+      .find((value): value is string => typeof value === 'string' && value.includes('[gateway]') && value.includes(' GET /health '));
+
+    expect(requestLogLine).toBeDefined();
+    expect(requestLogLine).toMatch(
+      /^\[gateway\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z GET \/health 200 \d+ms$/
+    );
+
+    logSpy.mockRestore();
+  });
+
   it('creates sessions by shelling to create + list commands', async () => {
     const now = '2026-02-22T00:00:00.000Z';
     const session = {

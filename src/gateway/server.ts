@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { Server } from 'node:http';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import express, { Request, Response } from 'express';
 import { SessionCli, SessionMode, StoredSession } from '../types';
@@ -142,8 +144,31 @@ export function resolveGatewayPort(env: NodeJS.ProcessEnv = process.env): number
   }
 }
 
+export function resolveGatewayCliBinary(
+  argv: readonly string[] = process.argv,
+  moduleDir: string = __dirname
+): string {
+  const argvBinary =
+    typeof argv[1] === 'string' && argv[1].trim().length > 0 ? path.resolve(argv[1]) : undefined;
+  const candidates = [
+    argvBinary,
+    path.resolve(moduleDir, '..', 'cli.js'),
+    path.resolve(moduleDir, '..', 'index.js'),
+    path.resolve(moduleDir, '..', '..', 'dist', 'cli.js'),
+    path.resolve(moduleDir, '..', '..', 'dist', 'index.js')
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return DEFAULT_GATEWAY_CLI_BINARY;
+}
+
 export function createGatewayCommandExecutor(
-  cliBinary: string = DEFAULT_GATEWAY_CLI_BINARY
+  cliBinary: string = resolveGatewayCliBinary()
 ): GatewayCommandExecutor {
   return async (args: string[]): Promise<GatewayCommandResult> => {
     try {
@@ -193,6 +218,18 @@ export function createGatewayApp(
   executeCommand: GatewayCommandExecutor = createGatewayCommandExecutor()
 ): express.Express {
   const app = express();
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+
+    res.once('finish', () => {
+      const durationMs = Date.now() - startedAt;
+      console.log(
+        `[gateway] ${new Date().toISOString()} ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`
+      );
+    });
+
+    next();
+  });
   app.use(express.json());
 
   app.post('/create', async (req: Request<{}, unknown, CreateBody>, res: Response) => {
@@ -443,7 +480,8 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   port: number;
 }> {
   const port = options.port ?? resolveGatewayPort();
-  const executeCommand = options.executeCommand ?? createGatewayCommandExecutor(options.cliBinary);
+  const cliBinary = options.cliBinary ?? resolveGatewayCliBinary();
+  const executeCommand = options.executeCommand ?? createGatewayCommandExecutor(cliBinary);
   const app = createGatewayApp(executeCommand);
 
   const server = await new Promise<Server>((resolve, reject) => {
@@ -455,6 +493,10 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
       reject(error);
     });
   });
+
+  const address = server.address();
+  const listeningPort = typeof address === 'object' && address !== null ? address.port : port;
+  console.log(`[gateway] ${new Date().toISOString()} server started port=${listeningPort} cli=${cliBinary}`);
 
   return {
     app,

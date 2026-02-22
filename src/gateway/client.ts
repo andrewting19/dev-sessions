@@ -170,13 +170,26 @@ export class GatewaySessionManager {
     requestPath: string,
     init: Omit<RequestInit, 'headers'> & { headers?: HeadersInit } = {}
   ): Promise<T> {
-    const response = await this.fetchFn(`${this.baseUrl}${requestPath}`, {
-      ...init,
-      headers: {
-        'content-type': 'application/json',
-        ...init.headers
+    const requestUrl = `${this.baseUrl}${requestPath}`;
+    let response: Response;
+    try {
+      response = await this.fetchFn(requestUrl, {
+        ...init,
+        headers: {
+          'content-type': 'application/json',
+          ...init.headers
+        }
+      });
+    } catch (error) {
+      // Sandbox/Docker sessions use the local gateway HTTP bridge; unreachable gateway fetches fail as TypeError.
+      if (error instanceof TypeError) {
+        const hint = 'Is the gateway running? Start it with: dev-sessions gateway --port <port>';
+        const detail = typeof error.message === 'string' && error.message.length > 0 ? ` (${error.message})` : '';
+        throw new Error(`Gateway request failed for ${requestUrl}${detail}. ${hint}`);
       }
-    });
+
+      throw error;
+    }
 
     const rawBody = await response.text();
     const payload = rawBody.length > 0 ? JSON.parse(rawBody) as Record<string, unknown> : {};
