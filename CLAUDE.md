@@ -37,20 +37,21 @@ This is a standalone tool. Docker integration (for claude-ting's `clauded` wrapp
 ```
 dev-sessions CLI
 ├── src/
-│   ├── cli.ts                 # Command parsing (commander.js or similar)
+│   ├── cli.ts                 # Command parsing (commander.js)
 │   ├── session-manager.ts     # Core session lifecycle (create/send/wait/kill)
 │   ├── backends/
 │   │   ├── claude-tmux.ts     # Claude Code: tmux + transcript parsing
 │   │   └── codex-appserver.ts # Codex: app-server JSON-RPC client
 │   ├── transcript/
 │   │   └── claude-parser.ts   # Parse Claude Code JSONL transcripts
-│   ├── session-store.ts       # SQLite or JSON file for session metadata
-│   ├── champion-ids.ts        # Human-friendly ID generation
-│   └── gateway-client.ts      # Optional: HTTP relay for Docker environments
+│   ├── session-store.ts       # JSON file at ~/.dev-sessions/sessions.json
+│   ├── champion-ids.ts        # Human-friendly ID generation (LoL champion + role)
+│   ├── gateway/
+│   │   ├── server.ts          # Express HTTP gateway (for Docker → host relay)
+│   │   └── client.ts          # Gateway client (used when IS_SANDBOX=1)
+│   └── types.ts               # Shared types
 ├── skill/
 │   └── SKILL.md               # /dev-sessions skill for Claude Code and Codex
-├── gateway/                   # Optional: thin HTTP relay for Docker
-│   └── ...
 └── tests/
     ├── unit/
     └── integration/
@@ -84,14 +85,21 @@ initialize → initialized → thread/start → turn/start → [stream notificat
 Key methods: `thread/start`, `turn/start`, `turn/interrupt`, `thread/list`
 Key notifications: `turn/started`, `item/agentMessage/delta`, `turn/completed`, `item/fileChange`
 
+## Known Gotchas
+
+- **`clauded` must be a binary**: `docker` mode runs `clauded` via `execFile` in a bash tmux session. If `clauded` is only a zsh shell function, it won't be found. Create a wrapper script at `~/.local/bin/clauded`.
+- **Gateway port conflict**: Default port 6767 can conflict with Docker. Use `DEV_SESSIONS_GATEWAY_PORT` env var to override.
+- **Codex mode is always yolo**: `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of `--mode`. Known issue, low priority.
+- **Claude create → send race**: `create` returns before Claude's TUI is ready. Add a small sleep between create and the first send if hitting issues.
+- **Gateway binary resolution**: The gateway resolves its own CLI path from `process.argv[1]` so it works whether installed globally or run via `node dist/index.js`.
+
 ## Testing Strategy
 
-See TODO.md for the full testing plan. Key principles:
-- Unit tests for transcript parsing (mock JSONL data)
-- Unit tests for champion ID generation
-- Integration tests for tmux session lifecycle (requires tmux installed)
-- Integration tests for codex app-server (requires codex installed)
-- E2E tests: create session → send message → wait → read response
+- 85 automated tests (unit + integration) across 16 test files
+- Unit tests for transcript parsing, champion IDs, session store, gateway client/server
+- Integration tests for tmux lifecycle, codex app-server, gateway relay
+- Real E2E verified: Claude and Codex sessions (create → send → wait → last-message → kill)
+- Real Docker E2E verified: all three paths (container → codex-on-host, container → claude-on-host, container → claude-in-docker)
 
 ## Development
 
@@ -106,11 +114,23 @@ npm link  # for local testing
 
 | Command | Description |
 |---------|-------------|
-| `create` | Spawn a new agent session |
-| `send <id> <msg>` | Send a message/task to a session |
-| `wait <id>` | Block until current turn completes |
-| `last-message <id>` | Get last N assistant messages from transcript |
-| `status <id>` | Check session status (idle/working/waiting) |
-| `list` | List all active sessions |
+| `create` | Spawn a new agent session (`--cli claude\|codex`, `--mode yolo\|native\|docker`, `-q` quiet) |
+| `send <id> <msg>` | Send a message/task to a session (`--file` to send file contents) |
+| `wait <id>` | Block until current turn completes (`--timeout` seconds) |
+| `last-message <id>` | Get last N assistant messages (`-n` count) |
+| `status <id>` | Check session status: `idle`, `working`, `waiting_for_input` |
+| `list` | List all active sessions (`--json` for machine-readable output) |
 | `kill <id>` | Terminate a session |
-| `install-skill` | Install the /dev-sessions skill for Claude Code and/or Codex |
+| `gateway` | Start the Docker relay gateway (`--port`) |
+| `install-skill` | Install the /dev-sessions skill (`--global\|--local`, `--claude\|--codex`) |
+
+## Publishing
+
+```bash
+npm run build
+npm version patch   # or minor/major
+npm publish --//registry.npmjs.org/:_authToken=$NPM_TOKEN
+git push
+```
+
+Token is stored in `.env` (gitignored). Load with `source .env` before publishing.
