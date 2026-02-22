@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 import { SessionMode } from '../types';
 
 const execFileAsync = promisify(execFile);
+const SHELL_COMMAND_PATTERN = /(^|\s|\/)-?(bash|zsh|sh|fish)(\s|$)/;
+const CONTROL_COMMAND_PATTERN = /(^|\s|\/)(tmux|login)(\s|$)/;
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -83,35 +85,62 @@ export class ClaudeTmuxBackend {
   }
 
   async isClaudeRunning(tmuxSessionName: string): Promise<boolean> {
+    return this.isCliRunning(tmuxSessionName, [
+      /(^|\s|\/)(claude|clauded)(\s|$)/,
+      /docker.*ubuntu-dev/
+    ]);
+  }
+
+  async isCliRunning(tmuxSessionName: string, commandPatterns: RegExp[] = []): Promise<boolean> {
     try {
-      const paneOutput = await this.execTmux(['list-panes', '-t', tmuxSessionName, '-F', '#{pane_tty}']);
-      const paneTtys = paneOutput
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+      const paneCommands = await this.getPaneCommands(tmuxSessionName);
 
-      for (const paneTty of paneTtys) {
-        const ttyName = path.basename(paneTty);
-
-        let psOutput = '';
-        try {
-          psOutput = await this.execCommand('ps', ['-t', ttyName, '-o', 'command=']);
-        } catch {
-          continue;
-        }
-
-        if (
-          /(^|\s|\/)(claude|clauded)(\s|$)/.test(psOutput) ||
-          /docker.*ubuntu-dev/.test(psOutput)
-        ) {
-          return true;
-        }
+      if (commandPatterns.length > 0) {
+        return paneCommands.some((command) =>
+          commandPatterns.some((pattern) => pattern.test(command))
+        );
       }
 
-      return false;
+      return paneCommands.some((command) => this.isUserCliProcess(command));
     } catch {
       return false;
     }
+  }
+
+  private async getPaneCommands(tmuxSessionName: string): Promise<string[]> {
+    const paneOutput = await this.execTmux(['list-panes', '-t', tmuxSessionName, '-F', '#{pane_tty}']);
+    const paneTtys = paneOutput
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const commands: string[] = [];
+
+    for (const paneTty of paneTtys) {
+      const ttyName = path.basename(paneTty);
+
+      let psOutput = '';
+      try {
+        psOutput = await this.execCommand('ps', ['-t', ttyName, '-o', 'command=']);
+      } catch {
+        continue;
+      }
+
+      const ttyCommands = psOutput
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      commands.push(...ttyCommands);
+    }
+
+    return commands;
+  }
+
+  private isUserCliProcess(command: string): boolean {
+    if (command.length === 0) {
+      return false;
+    }
+
+    return !SHELL_COMMAND_PATTERN.test(command) && !CONTROL_COMMAND_PATTERN.test(command);
   }
 
   private buildStartupCommand(workspacePath: string, mode: SessionMode, sessionUuid: string): string {
