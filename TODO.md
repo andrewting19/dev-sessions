@@ -1,124 +1,72 @@
 # TODO — dev-sessions
 
-## Phase 1: Foundation
+## Completed
 
-- [ ] Project scaffolding (TypeScript, tsconfig, package.json, build scripts)
-- [ ] Champion ID generation (port from claude-ting, add unit tests)
-- [ ] Session store (SQLite or JSON file at `~/.dev-sessions/sessions.json`)
-  - Schema: championId, internalId (uuid or threadId), cli, mode, path, description, status, createdAt, lastUsed
-- [ ] CLI skeleton with commander.js (all commands stubbed, `--help` works)
+### Phase 1: Foundation ✅
+- [x] TypeScript project scaffolding (package.json, tsconfig, vitest, build scripts)
+- [x] Champion ID generation (LoL champion + role, e.g., `fizz-top`)
+- [x] Session store (JSON file at `~/.dev-sessions/sessions.json`)
+- [x] CLI skeleton with commander.js (all commands wired)
 
-## Phase 2: Claude Code Backend (tmux + transcript)
+### Phase 2: Claude Code Backend ✅
+- [x] `create` — tmux + `claude --session-id <uuid> --dangerously-skip-permissions`
+- [x] `send` — base64-encoded tmux send-keys with CLI running verification
+- [x] `kill`, `list` with dead session pruning
+- [x] Transcript parsing: `~/.claude/projects/<sanitized-cwd>/<uuid>.jsonl`
+- [x] `last-message` — extract assistant text blocks from JSONL
+- [x] `status` — infer idle/working/waiting_for_input (system-entry-aware)
+- [x] `wait` — system-entry-based turn detection (reliable after 3 iterations of fixes)
 
-- [ ] `create` — spawn tmux session, launch `claude --session-id <uuid> --dangerously-skip-permissions`
-  - Pre-generate UUID, store mapping championId → uuid
-  - Handle `--mode docker` (use `clauded` wrapper), `--mode native`, `--mode yolo`
-  - Handle `--path` (default: cwd or `HOST_PATH` in Docker)
-- [ ] `send` — tmux send-keys with base64 encoding (port safety logic from current impl)
-  - Verify claude is running before sending (ps check on tmux pane TTY)
-  - Support `--file` flag to send file contents
-- [ ] `kill` — tmux kill-session + update store
-- [ ] `list` — read store, prune dead tmux sessions, display table
+### Phase 2b: Docker Gateway ✅
+- [x] Thin HTTP relay gateway (`dev-sessions gateway --port <port>`)
+- [x] CLI auto-detection: `IS_SANDBOX=1` → route through gateway
+- [x] `HOST_PATH` mapping for transcript resolution
+- [x] Gateway as subcommand (no separate install needed)
+- [x] E2E verified: simulated Docker env routes through gateway correctly
 
-### Claude Code Transcript Parsing
+### Phase 3: Codex Backend ✅
+- [x] Persistent `codex app-server` daemon (WebSocket, JSON-RPC 2.0)
+- [x] One daemon, many threads — conversation continuity across sends
+- [x] `create` auto-starts daemon if not running, calls `thread/start`
+- [x] `send` connects via WebSocket, calls `turn/start`, waits for `turn/completed`
+- [x] `wait`, `last-message`, `status` all work
+- [x] `kill` archives thread, stops daemon when last Codex session killed
+- [x] Daemon metadata at `~/.dev-sessions/codex-appserver.json`
 
-- [ ] Locate transcript file: `~/.claude/projects/<sanitized-cwd>/<uuid>.jsonl`
-  - CWD sanitization: `/Users/foo/bar` → `-Users-foo-bar`
-  - Handle Docker path mapping (HOST_PATH → sanitized host path)
-- [ ] Parse JSONL: extract messages by type (human/user/assistant)
-- [ ] `last-message` — read transcript, return last N assistant text blocks
-- [ ] `status` — infer from transcript:
-  - Last entry is assistant → `idle`
-  - Last entry is human/user → `working`
-  - Recent tool call to AskUserQuestion/ask_user → `waiting_for_input`
-- [ ] `wait` — tail transcript file, resolve when:
-  - New assistant message appears after the most recent human message
-  - Or timeout reached
-  - Poll interval: check file mtime every 2-3 seconds
+### Phase 4: Skill & Install ✅
+- [x] `/dev-sessions` skill (SKILL.md) with delegation patterns, brief templates, best practices
+- [x] `install-skill` command (--global/--local, --claude/--codex, auto-detect)
 
-## Phase 2b: Docker Integration (P0 — required for initial release)
-
-Docker-to-host support is required for the primary use case (agents running inside claude-ting Docker containers).
-
-- [ ] Thin HTTP relay gateway (port from current gateway, strip to essentials)
-  - Endpoints: `/create`, `/send`, `/kill`, `/list`, `/status`, `/wait`, `/last-message`
-  - No database in gateway — relay commands to host-side CLI
-  - Gateway runs on host, listens on port 6767
-- [ ] CLI auto-detection: if `IS_SANDBOX=1`, route commands through gateway at `DEV_SESSIONS_GATEWAY_URL` (default `http://host.docker.internal:6767`)
-- [ ] `HOST_PATH` → host workspace path mapping for transcript file resolution
-- [ ] Gateway can also be run as a simple `dev-sessions gateway` subcommand (no separate install)
-- [ ] Integration with claude-ting: document how `clauded` sets `HOST_PATH` and gateway URL
-- [ ] Note: Docker gateway is for Claude Code sessions only (Codex uses app-server natively on host)
-
-## Phase 3: Codex Backend (app-server)
-
-- [ ] Research: pin down exact `codex app-server` invocation and handshake
-- [ ] App-server lifecycle: spawn `codex app-server` process, perform JSON-RPC handshake
-  - `initialize` → `initialized` → `thread/start`
-- [ ] `create` — start app-server process, create thread, store threadId
-- [ ] `send` — `turn/start` with text input
-- [ ] `wait` — listen for `turn/completed` notification (streaming, not polling)
-- [ ] `last-message` — extract from turn completion response or thread state
-- [ ] `status` — derive from app-server state (in-turn → working, idle → idle)
-- [ ] `kill` — terminate app-server process + update store
-- [ ] Decide: one app-server per session, or shared app-server with multiple threads?
-
-## Phase 4: Skill & Polish
-
-- [ ] Write `/dev-sessions` skill (SKILL.md)
-  - When to delegate vs do it yourself
-  - How to write good task briefs (context, files, constraints, acceptance criteria)
-  - Polling strategy guidance (prefer `wait`, fallback to `status` + `last-message`)
-  - Fan-out patterns for parallel work
-  - Anti-patterns (delegating trivial tasks, insufficient context)
-- [ ] `install-skill` command (follows jupyter-cli pattern)
-  - Support `--global` (~/.<tool>/skills/) and `--local` (./<tool>/skills/)
-  - Support `--claude` and `--codex` flags
-  - Auto-detect available tools (~/.claude exists? ~/.codex exists?)
-  - Default to global install with auto-detect
-  - Skill installed as `dev-sessions/SKILL.md` in both tool skill dirs
-- [ ] Pretty output formatting (tables for `list`, colored status indicators)
-- [ ] `--quiet` / `-q` flag for scriptable output (just print session ID)
-
-## Phase 5: Advanced Features (future)
-
-- [ ] `send --file` with template variables (inject session context)
-- [ ] `wait` with multiple session IDs (wait for all/any)
-- [ ] Session groups (named collections for fan-out workflows)
-- [ ] Auto-cleanup: kill sessions older than N hours
-- [ ] `logs` command — full transcript dump with formatting
-- [ ] Codex Docker support (`codexed` + tmux + transcript parsing) — P2
+### Testing ✅
+- [x] 83 automated tests (unit + integration) across 15 test files
+- [x] Real E2E verified: Claude Code send→wait→last-message (3/3 reliable)
+- [x] Real E2E verified: Codex send→wait→last-message with conversation continuity
+- [x] Real E2E verified: Docker gateway relay (simulated IS_SANDBOX=1)
 
 ---
 
-## Testing Plan
+## Known Issues (to fix)
 
-### Unit Tests
-- [ ] Champion ID generation: uniqueness, format, round-trip (id ↔ tmux name)
-- [ ] Session store: CRUD operations, pruning, persistence
-- [ ] Claude transcript parser: message extraction, status inference, edge cases
-  - Empty transcript, single message, multi-turn, tool calls, content arrays
-- [ ] Codex response parser: turn completion, message extraction
-- [ ] CLI argument parsing: all commands, flags, defaults, validation
+- [ ] **Gateway assumes global `dev-sessions` binary** — `src/gateway/server.ts` shells out to `dev-sessions` by name. If not globally installed, gateway starts but all requests fail. Should resolve the binary path from the running process.
+- [ ] **Poor error when gateway unreachable** — sandbox mode shows generic `fetch failed` with no URL context. Should include gateway URL and suggest checking if gateway is running.
+- [ ] **No gateway request logging** — hard to debug routing issues in Docker environments.
 
-### Integration Tests (require tmux installed)
-- [ ] tmux session lifecycle: create → verify exists → send keys → kill
-- [ ] Base64 message encoding/decoding through tmux
-- [ ] CLI running detection (ps check on pane TTY)
-- [ ] Transcript file discovery (create session, verify file appears at expected path)
+## Remaining Work
 
-### Integration Tests (require codex installed)
-- [ ] App-server spawn and handshake
-- [ ] Thread creation and turn lifecycle
-- [ ] Streaming notification handling
+### clauded/Docker Integration
+- [ ] Add `dev-sessions` CLI to `claude-ting/Dockerfile.ubuntu-dev` (currently only installs `dev-sessions-mcp`)
+- [ ] Make `clauded` wrapper explicitly pass `DEV_SESSIONS_GATEWAY_URL` (like `codexed` does)
+- [ ] Update `claude-ting` entrypoint to start gateway or document manual gateway start
+- [ ] Real E2E test from inside an actual `clauded` container (simulated env passed, real Docker untested)
 
-### E2E Tests
-- [ ] Claude Code: create → send "echo hello" → wait → last-message contains "hello"
-- [ ] Codex: create → send simple task → wait → verify completion
-- [ ] List shows created sessions, kill removes them
-- [ ] Docker gateway relay (if Docker available)
+### Polish
+- [ ] `send --file` with template variables (inject session context)
+- [ ] `wait` with multiple session IDs (wait for all/any)
+- [ ] Auto-cleanup: kill sessions older than N hours
+- [ ] `logs` command — full transcript dump with formatting
+- [ ] Better error messages throughout (session not found, tmux not installed, codex not installed)
+- [ ] Publish to npm
 
-### Test Infrastructure
-- [ ] Mock JSONL transcript fixtures (various scenarios)
-- [ ] Test helpers for tmux session cleanup (kill all `dev-*` sessions after tests)
-- [ ] CI considerations: tmux available in CI? codex available? Mark tests accordingly
+### Future
+- [ ] Session groups (named collections for fan-out workflows)
+- [ ] Codex Docker support (`codexed` + tmux + transcript parsing) — P2
