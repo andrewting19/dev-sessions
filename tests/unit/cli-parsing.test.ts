@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildProgram, SessionManagerLike } from '../../src/cli';
+import { buildProgram, BuildProgramDependencies, SessionManagerLike } from '../../src/cli';
 import { StoredSession } from '../../src/types';
 
 function createMockSession(championId: string): StoredSession {
@@ -57,6 +57,50 @@ function createIoCapture(): {
       }
     },
     output
+  };
+}
+
+function createInstallSkillDependencies(options: {
+  homeDir?: string;
+  cwd?: string;
+  existingPaths?: string[];
+  skillContent?: string;
+} = {}): {
+  dependencies: BuildProgramDependencies;
+  mocks: {
+    pathExists: ReturnType<typeof vi.fn>;
+    mkdir: ReturnType<typeof vi.fn>;
+    readFile: ReturnType<typeof vi.fn>;
+    writeFile: ReturnType<typeof vi.fn>;
+  };
+} {
+  const homeDir = options.homeDir ?? '/mock/home';
+  const cwd = options.cwd ?? '/mock/workspace';
+  const existingPaths = new Set(options.existingPaths ?? []);
+  const skillContent = options.skillContent ?? '# dev-sessions skill';
+  const pathExists = vi.fn(async (candidatePath: string): Promise<boolean> => existingPaths.has(candidatePath));
+  const mkdir = vi.fn().mockResolvedValue(undefined);
+  const readFile = vi.fn().mockResolvedValue(skillContent);
+  const writeFile = vi.fn().mockResolvedValue(undefined);
+
+  return {
+    dependencies: {
+      installSkill: {
+        skillSourcePath: () => '/mock/dev-sessions/skill/SKILL.md',
+        cwd: () => cwd,
+        homedir: () => homeDir,
+        pathExists,
+        mkdir,
+        readFile,
+        writeFile
+      }
+    },
+    mocks: {
+      pathExists,
+      mkdir,
+      readFile,
+      writeFile
+    }
   };
 }
 
@@ -183,5 +227,135 @@ describe('CLI argument parsing', () => {
     await expect(
       program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--timeout', '12s'])
     ).rejects.toThrow('--timeout must be a positive integer');
+  });
+
+  it('rejects install-skill when both --global and --local are provided', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const { dependencies } = createInstallSkillDependencies();
+    const program = buildProgram(manager, io, dependencies);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'install-skill', '--global', '--local', '--claude'])
+    ).rejects.toThrow('Cannot use both --global and --local');
+  });
+
+  it('installs skill globally for Claude when explicitly targeted', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const homeDir = '/home/test-user';
+    const { dependencies, mocks } = createInstallSkillDependencies({ homeDir });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill', '--global', '--claude']);
+
+    const expectedDir = path.join(homeDir, '.claude', 'skills', 'dev-sessions');
+    const expectedFile = path.join(expectedDir, 'SKILL.md');
+    expect(mocks.readFile).toHaveBeenCalledWith('/mock/dev-sessions/skill/SKILL.md', 'utf8');
+    expect(mocks.mkdir).toHaveBeenCalledWith(expectedDir, { recursive: true });
+    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# dev-sessions skill', 'utf8');
+    expect(mocks.pathExists).not.toHaveBeenCalled();
+  });
+
+  it('installs skill locally for Codex when explicitly targeted', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const cwd = '/workspace/project';
+    const { dependencies, mocks } = createInstallSkillDependencies({ cwd });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill', '--local', '--codex']);
+
+    const expectedDir = path.join(cwd, '.codex', 'skills', 'dev-sessions');
+    const expectedFile = path.join(expectedDir, 'SKILL.md');
+    expect(mocks.mkdir).toHaveBeenCalledWith(expectedDir, { recursive: true });
+    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# dev-sessions skill', 'utf8');
+  });
+
+  it('auto-detects Claude when only ~/.claude exists', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const homeDir = '/home/autodetect';
+    const claudePath = path.join(homeDir, '.claude');
+    const { dependencies, mocks } = createInstallSkillDependencies({
+      homeDir,
+      existingPaths: [claudePath]
+    });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill']);
+
+    expect(mocks.pathExists).toHaveBeenCalledWith(path.join(homeDir, '.claude'));
+    expect(mocks.pathExists).toHaveBeenCalledWith(path.join(homeDir, '.codex'));
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# dev-sessions skill',
+      'utf8'
+    );
+  });
+
+  it('auto-detects Codex when only ~/.codex exists', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const homeDir = '/home/autodetect';
+    const codexPath = path.join(homeDir, '.codex');
+    const { dependencies, mocks } = createInstallSkillDependencies({
+      homeDir,
+      existingPaths: [codexPath]
+    });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill']);
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.codex', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# dev-sessions skill',
+      'utf8'
+    );
+  });
+
+  it('auto-detects both tools when ~/.claude and ~/.codex both exist', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const homeDir = '/home/autodetect';
+    const { dependencies, mocks } = createInstallSkillDependencies({
+      homeDir,
+      existingPaths: [path.join(homeDir, '.claude'), path.join(homeDir, '.codex')]
+    });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill']);
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# dev-sessions skill',
+      'utf8'
+    );
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.codex', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# dev-sessions skill',
+      'utf8'
+    );
+  });
+
+  it('defaults to Claude install when neither ~/.claude nor ~/.codex exists', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const homeDir = '/home/autodetect';
+    const { dependencies, mocks } = createInstallSkillDependencies({ homeDir });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill']);
+
+    expect(output.stdout).toContain('No ~/.claude or ~/.codex found; defaulting to Claude Code.');
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# dev-sessions skill',
+      'utf8'
+    );
   });
 });

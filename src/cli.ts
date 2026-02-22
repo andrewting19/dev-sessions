@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { Command, CommanderError, Option } from 'commander';
 import { createDefaultSessionManager, CreateSessionOptions, WaitOptions } from './session-manager';
@@ -7,6 +8,28 @@ import { AgentTurnStatus, StoredSession, WaitResult } from './types';
 interface CliIO {
   stdout: Pick<NodeJS.WriteStream, 'write'>;
   stderr: Pick<NodeJS.WriteStream, 'write'>;
+}
+
+type InstallSkillScope = 'global' | 'local';
+type InstallSkillTarget = 'claude' | 'codex';
+
+interface InstallSkillTargetResolution {
+  targets: InstallSkillTarget[];
+  defaultedToClaude: boolean;
+}
+
+export interface InstallSkillDependencies {
+  skillSourcePath(): string;
+  cwd(): string;
+  homedir(): string;
+  pathExists(candidatePath: string): Promise<boolean>;
+  mkdir(directoryPath: string, options: { recursive: true }): Promise<void>;
+  readFile(filePath: string, encoding: BufferEncoding): Promise<string>;
+  writeFile(filePath: string, content: string, encoding: BufferEncoding): Promise<void>;
+}
+
+export interface BuildProgramDependencies {
+  installSkill?: Partial<InstallSkillDependencies>;
 }
 
 export interface SessionManagerLike {
@@ -77,11 +100,100 @@ function formatSessionsTable(sessions: StoredSession[]): string {
   ].join('\n');
 }
 
+async function pathExists(candidatePath: string): Promise<boolean> {
+  try {
+    await access(candidatePath);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+function createDefaultInstallSkillDependencies(): InstallSkillDependencies {
+  return {
+    skillSourcePath: () => path.resolve(__dirname, '..', 'skill', 'SKILL.md'),
+    cwd: () => process.cwd(),
+    homedir: () => os.homedir(),
+    pathExists,
+    mkdir: async (directoryPath, options) => {
+      await mkdir(directoryPath, options);
+    },
+    readFile: async (filePath, encoding) => readFile(filePath, encoding),
+    writeFile: async (filePath, content, encoding) => {
+      await writeFile(filePath, content, encoding);
+    }
+  };
+}
+
+function resolveInstallSkillScope(options: { global?: boolean; local?: boolean }): InstallSkillScope {
+  if (options.global && options.local) {
+    throw new CliError('Cannot use both --global and --local');
+  }
+
+  return options.local ? 'local' : 'global';
+}
+
+async function resolveInstallSkillTargets(
+  options: { claude?: boolean; codex?: boolean },
+  dependencies: InstallSkillDependencies
+): Promise<InstallSkillTargetResolution> {
+  const targets: InstallSkillTarget[] = [];
+
+  if (options.claude) {
+    targets.push('claude');
+  }
+
+  if (options.codex) {
+    targets.push('codex');
+  }
+
+  if (targets.length > 0) {
+    return {
+      targets,
+      defaultedToClaude: false
+    };
+  }
+
+  const [claudeExists, codexExists] = await Promise.all([
+    dependencies.pathExists(path.join(dependencies.homedir(), '.claude')),
+    dependencies.pathExists(path.join(dependencies.homedir(), '.codex'))
+  ]);
+
+  if (claudeExists) {
+    targets.push('claude');
+  }
+
+  if (codexExists) {
+    targets.push('codex');
+  }
+
+  if (targets.length === 0) {
+    return {
+      targets: ['claude'],
+      defaultedToClaude: true
+    };
+  }
+
+  return {
+    targets,
+    defaultedToClaude: false
+  };
+}
+
 export function buildProgram(
   manager: SessionManagerLike,
-  io: CliIO = { stdout: process.stdout, stderr: process.stderr }
+  io: CliIO = { stdout: process.stdout, stderr: process.stderr },
+  dependencies: BuildProgramDependencies = {}
 ): Command {
   const program = new Command();
+  const installSkillDependencies: InstallSkillDependencies = {
+    ...createDefaultInstallSkillDependencies(),
+    ...dependencies.installSkill
+  };
 
   program
     .name('dev-sessions')
@@ -203,6 +315,47 @@ export function buildProgram(
       }
 
       io.stdout.write('completed\n');
+    });
+
+  program
+    .command('install-skill')
+    .description('Install the dev-sessions skill for Claude Code and/or Codex CLI')
+    .option('--global', 'Install globally (~/.<tool>/skills/)')
+    .option('--local', 'Install locally (./.<tool>/skills/)')
+    .option('--claude', 'Install for Claude Code')
+    .option('--codex', 'Install for Codex CLI')
+    .action(async (options: { global?: boolean; local?: boolean; claude?: boolean; codex?: boolean }) => {
+      const scope = resolveInstallSkillScope(options);
+      const { targets, defaultedToClaude } = await resolveInstallSkillTargets(options, installSkillDependencies);
+      const sourcePath = installSkillDependencies.skillSourcePath();
+      const sourceContent = await installSkillDependencies.readFile(sourcePath, 'utf8');
+      const installBasePath =
+        scope === 'global'
+          ? installSkillDependencies.homedir()
+          : path.resolve(installSkillDependencies.cwd());
+      const installedDirectories: string[] = [];
+
+      for (const target of targets) {
+        const destinationDirectory = path.join(
+          installBasePath,
+          `.${target}`,
+          'skills',
+          'dev-sessions'
+        );
+        const destinationFile = path.join(destinationDirectory, 'SKILL.md');
+
+        await installSkillDependencies.mkdir(destinationDirectory, { recursive: true });
+        await installSkillDependencies.writeFile(destinationFile, sourceContent, 'utf8');
+        installedDirectories.push(destinationDirectory);
+      }
+
+      if (defaultedToClaude) {
+        io.stdout.write('No ~/.claude or ~/.codex found; defaulting to Claude Code.\n');
+      }
+
+      installedDirectories.forEach((directoryPath) => {
+        io.stdout.write(`Installed dev-sessions skill: ${directoryPath}\n`);
+      });
     });
 
   return program;
