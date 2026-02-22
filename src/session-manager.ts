@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { generateChampionId, toTmuxSessionName } from './champion-ids';
 import { ClaudeTmuxBackend } from './backends/claude-tmux';
+import { CodexAppServerBackend } from './backends/codex-appserver';
 import { SessionStore, createDefaultSessionStore } from './session-store';
 import {
   countAssistantMessages,
@@ -12,12 +13,14 @@ import {
   inferTranscriptStatus,
   readClaudeTranscript
 } from './transcript/claude-parser';
-import { AgentTurnStatus, SessionMode, StoredSession, WaitResult } from './types';
+import { AgentTurnStatus, SessionCli, SessionMode, StoredSession, WaitResult } from './types';
 
 export interface CreateSessionOptions {
   path?: string;
   description?: string;
+  cli?: SessionCli;
   mode?: SessionMode;
+  model?: string;
 }
 
 export interface WaitOptions {
@@ -28,30 +31,51 @@ export interface WaitOptions {
 export class SessionManager {
   constructor(
     private readonly store: SessionStore,
-    private readonly claudeBackend: ClaudeTmuxBackend
+    private readonly claudeBackend: ClaudeTmuxBackend,
+    private readonly codexBackend: CodexAppServerBackend = new CodexAppServerBackend()
   ) {}
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
     const workspacePath = path.resolve(options.path ?? process.cwd());
-    const mode = options.mode ?? 'yolo';
+    const cli = options.cli ?? 'claude';
     const championId = await this.findAvailableChampionId();
-    const tmuxSessionName = toTmuxSessionName(championId);
-    const internalId = randomUUID();
-
-    await this.claudeBackend.createSession(tmuxSessionName, workspacePath, mode, internalId);
-
     const timestamp = new Date().toISOString();
-    const session: StoredSession = {
-      championId,
-      internalId,
-      cli: 'claude',
-      mode,
-      path: workspacePath,
-      description: options.description,
-      status: 'active',
-      createdAt: timestamp,
-      lastUsed: timestamp
-    };
+    let session: StoredSession;
+
+    if (cli === 'codex') {
+      const model = options.model ?? 'o4-mini';
+      const codexSession = await this.codexBackend.createSession(championId, workspacePath, model);
+      session = {
+        championId,
+        internalId: codexSession.threadId,
+        cli: 'codex',
+        mode: 'native',
+        path: workspacePath,
+        description: options.description,
+        status: 'active',
+        appServerPid: codexSession.pid,
+        model: codexSession.model,
+        createdAt: timestamp,
+        lastUsed: timestamp
+      };
+    } else {
+      const mode = options.mode ?? 'yolo';
+      const tmuxSessionName = toTmuxSessionName(championId);
+      const internalId = randomUUID();
+
+      await this.claudeBackend.createSession(tmuxSessionName, workspacePath, mode, internalId);
+      session = {
+        championId,
+        internalId,
+        cli: 'claude',
+        mode,
+        path: workspacePath,
+        description: options.description,
+        status: 'active',
+        createdAt: timestamp,
+        lastUsed: timestamp
+      };
+    }
 
     await this.store.upsertSession(session);
     return session;
@@ -59,24 +83,39 @@ export class SessionManager {
 
   async sendMessage(championId: string, message: string): Promise<void> {
     const session = await this.requireSession(championId);
-    const tmuxSessionName = toTmuxSessionName(session.championId);
 
-    await this.claudeBackend.sendMessage(tmuxSessionName, message);
+    if (session.cli === 'codex') {
+      await this.codexBackend.sendMessage(session.championId, session.internalId, message);
+    } else {
+      const tmuxSessionName = toTmuxSessionName(session.championId);
+      await this.claudeBackend.sendMessage(tmuxSessionName, message);
+    }
+
     await this.store.updateSession(championId, {
       lastUsed: new Date().toISOString(),
-      status: 'active'
+      status: 'active',
+      lastTurnStatus: undefined,
+      lastTurnError: undefined
     });
   }
 
   async killSession(championId: string): Promise<void> {
     const session = await this.requireSession(championId);
-    const tmuxSessionName = toTmuxSessionName(session.championId);
 
-    try {
-      await this.claudeBackend.killSession(tmuxSessionName);
-    } catch (error: unknown) {
-      if (!(error instanceof Error) || !/failed to connect server|no server running|can't find session/i.test(error.message)) {
-        throw error;
+    if (session.cli === 'codex') {
+      await this.codexBackend.killSession(session.championId, session.appServerPid);
+    } else {
+      const tmuxSessionName = toTmuxSessionName(session.championId);
+
+      try {
+        await this.claudeBackend.killSession(tmuxSessionName);
+      } catch (error: unknown) {
+        if (
+          !(error instanceof Error) ||
+          !/failed to connect server|no server running|can't find session/i.test(error.message)
+        ) {
+          throw error;
+        }
       }
     }
 
@@ -88,7 +127,10 @@ export class SessionManager {
     const livenessChecks = await Promise.all(
       sessions.map(async (session) => ({
         championId: session.championId,
-        exists: await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId))
+        exists:
+          session.cli === 'codex'
+            ? await this.codexBackend.sessionExists(session.championId, session.appServerPid)
+            : await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId))
       }))
     );
 
@@ -105,6 +147,11 @@ export class SessionManager {
 
   async getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]> {
     const session = await this.requireSession(championId);
+
+    if (session.cli === 'codex') {
+      return this.codexBackend.getLastAssistantMessages(championId, count);
+    }
+
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
     const transcriptEntries = await readClaudeTranscript(transcriptPath);
     const blocks = getAssistantTextBlocks(transcriptEntries);
@@ -114,6 +161,11 @@ export class SessionManager {
 
   async getSessionStatus(championId: string): Promise<AgentTurnStatus> {
     const session = await this.requireSession(championId);
+
+    if (session.cli === 'codex') {
+      return this.codexBackend.getSessionStatus(championId);
+    }
+
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
     const transcriptEntries = await readClaudeTranscript(transcriptPath);
 
@@ -122,6 +174,39 @@ export class SessionManager {
 
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
     const session = await this.requireSession(championId);
+
+    if (session.cli === 'codex') {
+      const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
+      const waitResult = await this.codexBackend.waitForTurn(session.championId, timeoutMs);
+
+      if (waitResult.timedOut) {
+        return {
+          completed: false,
+          timedOut: true,
+          elapsedMs: waitResult.elapsedMs
+        };
+      }
+
+      await this.store.updateSession(championId, {
+        lastUsed: new Date().toISOString(),
+        lastTurnStatus: waitResult.status,
+        lastTurnError: waitResult.errorMessage
+      });
+
+      if (waitResult.status === 'failed') {
+        const message = waitResult.errorMessage
+          ? `Codex turn failed: ${waitResult.errorMessage}`
+          : 'Codex turn failed';
+        throw new Error(message);
+      }
+
+      return {
+        completed: true,
+        timedOut: false,
+        elapsedMs: waitResult.elapsedMs
+      };
+    }
+
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
     const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
     const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
@@ -215,5 +300,5 @@ export class SessionManager {
 }
 
 export function createDefaultSessionManager(): SessionManager {
-  return new SessionManager(createDefaultSessionStore(), new ClaudeTmuxBackend());
+  return new SessionManager(createDefaultSessionStore(), new ClaudeTmuxBackend(), new CodexAppServerBackend());
 }

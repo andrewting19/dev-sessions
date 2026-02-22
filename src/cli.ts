@@ -202,9 +202,14 @@ export function buildProgram(
 
   program
     .command('create')
-    .description('Create a new Claude Code tmux session')
-    .option('-p, --path <path>', 'Workspace path to run Claude in', getDefaultWorkspacePath())
+    .description('Create a new agent session')
+    .option('-p, --path <path>', 'Workspace path to run the agent in', getDefaultWorkspacePath())
     .option('-d, --description <description>', 'Optional description for the session')
+    .addOption(
+      new Option('--cli <cli>', 'Agent CLI backend')
+        .choices(['claude', 'codex'])
+        .default('claude')
+    )
     .addOption(
       new Option('-m, --mode <mode>', 'Session mode')
         .choices(['yolo', 'native', 'docker'])
@@ -214,11 +219,13 @@ export function buildProgram(
     .action(async (options: {
       path: string;
       description?: string;
+      cli: 'claude' | 'codex';
       mode: 'yolo' | 'native' | 'docker';
       quiet?: boolean;
     }) => {
       const session = await manager.createSession({
         path: options.path,
+        cli: options.cli,
         description: options.description,
         mode: options.mode
       });

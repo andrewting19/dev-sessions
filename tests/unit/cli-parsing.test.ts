@@ -134,6 +134,7 @@ describe('CLI argument parsing', () => {
 
     expect(manager.createSession).toHaveBeenCalledWith({
       path: '/tmp/project',
+      cli: 'claude',
       mode: 'native',
       description: 'backend task'
     });
@@ -154,6 +155,7 @@ describe('CLI argument parsing', () => {
 
       expect(manager.createSession).toHaveBeenCalledWith({
         path: '/host/workspace',
+        cli: 'claude',
         mode: 'yolo',
         description: undefined
       });
@@ -180,6 +182,21 @@ describe('CLI argument parsing', () => {
     await program.parseAsync(['node', 'dev-sessions', 'create', '--quiet']);
 
     expect(output.stdout.trim()).toBe('fizz-top');
+  });
+
+  it('parses create --cli codex', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'create', '--cli', 'codex']);
+
+    expect(manager.createSession).toHaveBeenCalledWith({
+      path: process.cwd(),
+      cli: 'codex',
+      mode: 'yolo',
+      description: undefined
+    });
   });
 
   it('parses send command with inline message', async () => {

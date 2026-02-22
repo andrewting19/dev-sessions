@@ -23,11 +23,18 @@ function isStoredSession(value: unknown): value is StoredSession {
   return (
     typeof candidate.championId === 'string' &&
     typeof candidate.internalId === 'string' &&
-    candidate.cli === 'claude' &&
+    (candidate.cli === 'claude' || candidate.cli === 'codex') &&
     (candidate.mode === 'yolo' || candidate.mode === 'native' || candidate.mode === 'docker') &&
     typeof candidate.path === 'string' &&
     (candidate.description === undefined || typeof candidate.description === 'string') &&
     (candidate.status === 'active' || candidate.status === 'inactive') &&
+    (candidate.appServerPid === undefined || Number.isInteger(candidate.appServerPid)) &&
+    (candidate.model === undefined || typeof candidate.model === 'string') &&
+    (candidate.lastTurnStatus === undefined ||
+      candidate.lastTurnStatus === 'completed' ||
+      candidate.lastTurnStatus === 'failed' ||
+      candidate.lastTurnStatus === 'interrupted') &&
+    (candidate.lastTurnError === undefined || typeof candidate.lastTurnError === 'string') &&
     typeof candidate.createdAt === 'string' &&
     typeof candidate.lastUsed === 'string'
   );
