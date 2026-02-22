@@ -155,6 +155,106 @@ describe('gateway server', () => {
     expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--file', '/tmp/brief.md']);
   });
 
+  it('sends inline messages when message is provided', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => createCommandResult(args, ''));
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/send`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sessionId: 'fizz-top',
+        message: 'run tests'
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', 'run tests']);
+  });
+
+  it('relays list, status, and kill routes to the CLI', async () => {
+    const now = '2026-02-22T00:00:00.000Z';
+    const session = {
+      championId: 'fizz-top',
+      internalId: 'uuid-123',
+      cli: 'claude',
+      mode: 'docker',
+      path: '/host/project',
+      status: 'active',
+      createdAt: now,
+      lastUsed: now
+    } as const;
+
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      if (args[0] === 'list') {
+        return createCommandResult(args, `${JSON.stringify([session])}\n`);
+      }
+
+      if (args[0] === 'status') {
+        return createCommandResult(args, 'working\n');
+      }
+
+      if (args[0] === 'kill') {
+        return createCommandResult(args, '');
+      }
+
+      throw new Error(`Unexpected command: ${args.join(' ')}`);
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const listResponse = await fetch(`${server.baseUrl}/list`);
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        sessions: [session]
+      })
+    );
+
+    const statusResponse = await fetch(`${server.baseUrl}/status?id=fizz-top`);
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        status: 'working'
+      })
+    );
+
+    const killResponse = await fetch(`${server.baseUrl}/kill`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sessionId: 'fizz-top'
+      })
+    });
+    expect(killResponse.status).toBe(200);
+
+    expect(executeCommand).toHaveBeenNthCalledWith(1, ['list', '--json']);
+    expect(executeCommand).toHaveBeenNthCalledWith(2, ['status', 'fizz-top']);
+    expect(executeCommand).toHaveBeenNthCalledWith(3, ['kill', 'fizz-top']);
+  });
+
+  it('relays successful wait commands with timeout and interval', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => createCommandResult(args, 'completed\n'));
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/wait?id=fizz-top&timeout=7&interval=2`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.waitResult.completed).toBe(true);
+    expect(body.waitResult.timedOut).toBe(false);
+    expect(executeCommand).toHaveBeenCalledWith(['wait', 'fizz-top', '--timeout', '7', '--interval', '2']);
+  });
+
   it('returns timeout payload for wait command exit code 124', async () => {
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
       throw new GatewayCommandError('wait timed out', {
@@ -190,5 +290,27 @@ describe('gateway server', () => {
     const body = await response.json();
     expect(body.blocks).toEqual(['first block', 'second block']);
     expect(executeCommand).toHaveBeenCalledWith(['last-message', 'fizz-top', '-n', '2']);
+  });
+
+  it('returns command failure payloads when session IDs do not exist', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      throw new GatewayCommandError('Command failed: dev-sessions status missing-id', {
+        command: ['dev-sessions', ...args],
+        stdout: '',
+        stderr: 'Session not found: missing-id\n',
+        exitCode: 1
+      });
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/status?id=missing-id`);
+    expect(response.status).toBe(500);
+
+    const body = await response.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain('Command failed: dev-sessions status missing-id');
+    expect(body.output.exitCode).toBe(1);
+    expect(body.output.stderr).toContain('Session not found: missing-id');
   });
 });

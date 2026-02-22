@@ -18,6 +18,8 @@ interface CreateCall {
 
 class FakeClaudeBackend extends ClaudeTmuxBackend {
   readonly createCalls: CreateCall[] = [];
+  readonly sendCalls: Array<{ tmuxSessionName: string; message: string }> = [];
+  readonly killCalls: string[] = [];
   private readonly liveSessions = new Set<string>();
 
   constructor() {
@@ -39,9 +41,15 @@ class FakeClaudeBackend extends ClaudeTmuxBackend {
     this.liveSessions.add(tmuxSessionName);
   }
 
-  override async sendMessage(): Promise<void> {}
+  override async sendMessage(tmuxSessionName: string, message: string): Promise<void> {
+    this.sendCalls.push({
+      tmuxSessionName,
+      message
+    });
+  }
 
   override async killSession(tmuxSessionName: string): Promise<void> {
+    this.killCalls.push(tmuxSessionName);
     this.liveSessions.delete(tmuxSessionName);
   }
 
@@ -303,5 +311,84 @@ describe('SessionManager', () => {
         timeoutSeconds: 2
       })
     ).rejects.toThrow('Codex turn failed: runtime error');
+  });
+
+  it('returns timedOut when Claude transcript does not complete before timeout', async () => {
+    const session = await manager.createSession({
+      path: '/tmp/project-timeout',
+      mode: 'yolo'
+    });
+
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-timeout');
+    const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
+    await mkdir(transcriptDir, { recursive: true });
+    await writeFile(
+      transcriptPath,
+      '{"type":"human","message":{"content":"long running task"}}',
+      'utf8'
+    );
+
+    const waitResult = await manager.waitForSession(session.championId, {
+      timeoutSeconds: 1,
+      intervalSeconds: 1
+    });
+
+    expect(waitResult.completed).toBe(false);
+    expect(waitResult.timedOut).toBe(true);
+    expect(waitResult.elapsedMs).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it('routes mixed Claude and Codex sessions to the correct backend and kill path', async () => {
+    const claudeSession = await manager.createSession({
+      path: '/tmp/claude-mixed',
+      mode: 'native'
+    });
+    const codexSession = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-mixed'
+    });
+
+    const claudeTranscriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-claude-mixed');
+    const claudeTranscriptPath = path.join(claudeTranscriptDir, `${claudeSession.internalId}.jsonl`);
+    await mkdir(claudeTranscriptDir, { recursive: true });
+    await writeFile(
+      claudeTranscriptPath,
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Claude says hi"}]}}',
+      'utf8'
+    );
+
+    codexBackend.statuses.set(codexSession.championId, 'working');
+    codexBackend.messages.set(codexSession.championId, ['Codex says hi']);
+
+    const listed = await manager.listSessions();
+    expect(listed.map((session) => session.championId).sort()).toEqual(
+      [claudeSession.championId, codexSession.championId].sort()
+    );
+
+    expect(await manager.getSessionStatus(claudeSession.championId)).toBe('idle');
+    expect(await manager.getSessionStatus(codexSession.championId)).toBe('working');
+
+    expect(await manager.getLastAssistantTextBlocks(claudeSession.championId, 1))
+      .toEqual(['Claude says hi']);
+    expect(await manager.getLastAssistantTextBlocks(codexSession.championId, 1))
+      .toEqual(['Codex says hi']);
+
+    await manager.killSession(codexSession.championId);
+    await manager.killSession(claudeSession.championId);
+
+    expect(codexBackend.killCalls).toEqual([
+      {
+        championId: codexSession.championId,
+        pid: codexSession.appServerPid
+      }
+    ]);
+    expect(backend.killCalls).toEqual([toTmuxSessionName(claudeSession.championId)]);
+    expect(await manager.listSessions()).toEqual([]);
+  });
+
+  it('throws session-not-found errors for unknown IDs', async () => {
+    await expect(manager.getSessionStatus('missing-id')).rejects.toThrow('Session not found: missing-id');
+    await expect(manager.sendMessage('missing-id', 'hello')).rejects.toThrow('Session not found: missing-id');
+    await expect(manager.killSession('missing-id')).rejects.toThrow('Session not found: missing-id');
   });
 });

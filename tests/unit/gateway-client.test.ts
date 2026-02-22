@@ -115,4 +115,60 @@ describe('GatewaySessionManager', () => {
 
     await expect(manager.getSessionStatus('fizz-top')).rejects.toThrow('Session not found: fizz-top');
   });
+
+  it('routes send/list/status/last-message/kill to the expected gateway endpoints', async () => {
+    const fetchSpy = vi.fn(async (requestUrl: string) => {
+      if (requestUrl.endsWith('/list')) {
+        return jsonResponse(200, { sessions: [createSessionFixture('fizz-top')] });
+      }
+
+      if (requestUrl.includes('/status?')) {
+        return jsonResponse(200, { status: 'working' });
+      }
+
+      if (requestUrl.includes('/last-message?')) {
+        return jsonResponse(200, { blocks: ['block one', 'block two'] });
+      }
+
+      return jsonResponse(200, {});
+    });
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await manager.sendMessage('fizz-top', 'hello');
+    const sessions = await manager.listSessions();
+    const status = await manager.getSessionStatus('fizz-top');
+    const blocks = await manager.getLastAssistantTextBlocks('fizz-top', 2);
+    await manager.killSession('fizz-top');
+
+    expect(sessions).toHaveLength(1);
+    expect(status).toBe('working');
+    expect(blocks).toEqual(['block one', 'block two']);
+    expect(fetchSpy.mock.calls).toHaveLength(5);
+
+    expect(fetchSpy.mock.calls[0][0]).toBe('http://gateway.test:6767/send');
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).toEqual({
+      sessionId: 'fizz-top',
+      message: 'hello'
+    });
+
+    expect(fetchSpy.mock.calls[1][0]).toBe('http://gateway.test:6767/list');
+    expect(fetchSpy.mock.calls[2][0]).toBe('http://gateway.test:6767/status?id=fizz-top');
+    expect(fetchSpy.mock.calls[3][0]).toBe('http://gateway.test:6767/last-message?id=fizz-top&n=2');
+    expect(fetchSpy.mock.calls[4][0]).toBe('http://gateway.test:6767/kill');
+  });
+
+  it('bubbles up fetch/network failures when gateway is unreachable', async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:6767');
+    });
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://127.0.0.1:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await expect(manager.listSessions()).rejects.toThrow('ECONNREFUSED');
+  });
 });

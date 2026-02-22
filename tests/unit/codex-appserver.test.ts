@@ -1,7 +1,7 @@
 import { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexAppServerBackend } from '../../src/backends/codex-appserver';
 
 interface RpcMessage {
@@ -273,5 +273,165 @@ describe('CodexAppServerBackend', () => {
     expect(waitResult.status).toBe('failed');
     expect(waitResult.errorMessage).toBe('tool execution failed');
     expect(() => backend.getSessionStatus('ahri-mid')).toThrow('Codex turn failed: tool execution failed');
+  });
+
+  it('supports full create -> send -> wait -> last-message -> kill lifecycle', async () => {
+    const { backend, process } = createBackendHarness((message, proc) => {
+      if (
+        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
+        typeof message.id === 'number'
+      ) {
+        if (message.method === 'thread/start') {
+          proc.emitJson({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              thread: {
+                id: 'thr_lifecycle'
+              }
+            }
+          });
+          return;
+        }
+
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {}
+        });
+      }
+    });
+
+    const created = await backend.createSession('fizz-top', '/tmp/workspace', 'o4-mini');
+    expect(created.threadId).toBe('thr_lifecycle');
+
+    await backend.sendMessage('fizz-top', created.threadId, 'Ship this feature');
+    expect(backend.getSessionStatus('fizz-top')).toBe('working');
+
+    const waitPromise = backend.waitForTurn('fizz-top', 2_000);
+    process.emitJson({
+      jsonrpc: '2.0',
+      method: 'item/agentMessage/delta',
+      params: {
+        delta: {
+          text: 'Feature shipped.'
+        }
+      }
+    });
+    process.emitJson({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: {
+        turn: {
+          id: 'turn_done',
+          status: 'completed'
+        }
+      }
+    });
+
+    const waitResult = await waitPromise;
+    expect(waitResult).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed'
+    });
+    expect(backend.getLastAssistantMessages('fizz-top', 1)).toEqual(['Feature shipped.']);
+    expect(backend.getSessionStatus('fizz-top')).toBe('idle');
+
+    await backend.killSession('fizz-top');
+    expect(process.killSignals).toEqual(['SIGTERM']);
+    expect(() => backend.getSessionStatus('fizz-top'))
+      .toThrow('Codex session not found in this process: fizz-top');
+  });
+
+  it('returns failed wait result when app-server exits mid-turn', async () => {
+    const { backend, process } = createBackendHarness((message, proc) => {
+      if (
+        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
+        typeof message.id === 'number'
+      ) {
+        if (message.method === 'thread/start') {
+          proc.emitJson({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              thread: {
+                id: 'thr_crash'
+              }
+            }
+          });
+          return;
+        }
+
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {}
+        });
+      }
+    });
+
+    await backend.createSession('riven-jg', '/tmp/repo');
+    await backend.sendMessage('riven-jg', 'thr_crash', 'Do work');
+
+    const waitPromise = backend.waitForTurn('riven-jg', 2_000);
+    process.exitCode = 1;
+    process.emit('exit', 1, null);
+
+    const waitResult = await waitPromise;
+    expect(waitResult).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'failed'
+    });
+    expect(waitResult.errorMessage).toContain('Codex app-server exited (code 1)');
+    expect(() => backend.getSessionStatus('riven-jg'))
+      .toThrow(/Codex app-server is not running for riven-jg/);
+    await expect(backend.sendMessage('riven-jg', 'thr_crash', 'retry')).rejects
+      .toThrow(/Codex app-server is not running for riven-jg/);
+  });
+
+  it('returns timedOut when wait exceeds timeout before completion', async () => {
+    vi.useFakeTimers();
+    const { backend } = createBackendHarness((message, proc) => {
+      if (
+        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
+        typeof message.id === 'number'
+      ) {
+        if (message.method === 'thread/start') {
+          proc.emitJson({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              thread: {
+                id: 'thr_timeout'
+              }
+            }
+          });
+          return;
+        }
+
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {}
+        });
+      }
+    });
+
+    await backend.createSession('ahri-mid', '/tmp/repo');
+    await backend.sendMessage('ahri-mid', 'thr_timeout', 'This should time out');
+
+    const waitPromise = backend.waitForTurn('ahri-mid', 25);
+    await vi.advanceTimersByTimeAsync(25);
+    const waitResult = await waitPromise;
+
+    expect(waitResult).toMatchObject({
+      completed: false,
+      timedOut: true,
+      status: 'interrupted'
+    });
+    expect(backend.getSessionStatus('ahri-mid')).toBe('working');
+    vi.useRealTimers();
   });
 });
