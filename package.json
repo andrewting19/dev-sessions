@@ -15,8 +15,6 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "test:all": "vitest run",
-    "test:integration": "vitest run tests/integration/",
     "test:watch": "vitest"
   },
   "engines": {
