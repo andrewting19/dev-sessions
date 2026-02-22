@@ -20,7 +20,8 @@ const WAITING_TOOL_NAMES = new Set([
 ]);
 
 export function sanitizeWorkspacePath(workspacePath: string): string {
-  return path.resolve(workspacePath).replace(/[\\/]/g, '-');
+  // Claude normalizes project directory names by replacing non-alphanumeric characters with "-".
+  return path.resolve(workspacePath).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 export function getClaudeTranscriptPath(

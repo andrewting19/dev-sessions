@@ -51,12 +51,26 @@ export class ClaudeTmuxBackend {
 
     const script = [
       `decoded=$( (printf '%s' ${encoded} | base64 --decode 2>/dev/null) || (printf '%s' ${encoded} | base64 -D) )`,
-      `tmux send-keys -l -t ${sessionTarget} "$decoded"`,
-      `tmux send-keys -t ${sessionTarget} C-m`,
-      `tmux send-keys -t ${sessionTarget} C-m`
+      `tmux send-keys -l -t ${sessionTarget} "$decoded"`
     ].join('\n');
 
     await this.execCommand('bash', ['-lc', script], 30_000);
+
+    // Small gaps mirror the original SSH gateway timing and improve submit reliability.
+    await this.sleep(75);
+
+    // Keep Enter presses as separate tmux commands to match the original gateway behavior.
+    await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+    await this.sleep(150);
+    await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+  }
+
+  async submitInput(tmuxSessionName: string): Promise<void> {
+    if (!(await this.isClaudeRunning(tmuxSessionName))) {
+      throw new Error('Claude is not running in this tmux session - refusing to submit input');
+    }
+
+    await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
   }
 
   async killSession(tmuxSessionName: string): Promise<void> {

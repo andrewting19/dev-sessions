@@ -20,6 +20,7 @@ export interface StoredSession {
   model?: string;
   lastTurnStatus?: CodexTurnStatus;
   lastTurnError?: string;
+  lastAssistantMessages?: string[];
   createdAt: string;
   lastUsed: string;
 }

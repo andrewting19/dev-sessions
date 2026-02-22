@@ -44,7 +44,7 @@ export class SessionManager {
     let session: StoredSession;
 
     if (cli === 'codex') {
-      const model = options.model ?? 'o4-mini';
+      const model = options.model ?? 'gpt-5.3-codex';
       const codexSession = await this.codexBackend.createSession(championId, workspacePath, model);
       session = {
         championId,
@@ -54,8 +54,8 @@ export class SessionManager {
         path: workspacePath,
         description: options.description,
         status: 'active',
-        appServerPid: codexSession.pid,
         model: codexSession.model,
+        lastAssistantMessages: [],
         createdAt: timestamp,
         lastUsed: timestamp
       };
@@ -86,11 +86,40 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      await this.codexBackend.sendMessage(session.championId, session.internalId, message);
-    } else {
-      const tmuxSessionName = toTmuxSessionName(session.championId);
-      await this.claudeBackend.sendMessage(tmuxSessionName, message);
+      const sendResult = await this.codexBackend.sendMessage(session.championId, session.internalId, message, {
+        workspacePath: session.path,
+        model: session.model
+      });
+      const nextAssistantMessages =
+        sendResult.assistantMessage.length > 0
+          ? [...(session.lastAssistantMessages ?? []), sendResult.assistantMessage]
+          : [...(session.lastAssistantMessages ?? [])];
+
+      await this.store.updateSession(championId, {
+        internalId: sendResult.threadId,
+        lastUsed: new Date().toISOString(),
+        status: 'active',
+        lastTurnStatus: sendResult.status,
+        lastTurnError: sendResult.errorMessage,
+        lastAssistantMessages: nextAssistantMessages
+      });
+
+      if (sendResult.timedOut || sendResult.status === 'interrupted') {
+        throw new Error(sendResult.errorMessage ?? `Codex turn timed out for ${championId}`);
+      }
+
+      if (sendResult.status === 'failed') {
+        const messageText = sendResult.errorMessage
+          ? `Codex turn failed: ${sendResult.errorMessage}`
+          : 'Codex turn failed';
+        throw new Error(messageText);
+      }
+
+      return;
     }
+
+    const tmuxSessionName = toTmuxSessionName(session.championId);
+    await this.claudeBackend.sendMessage(tmuxSessionName, message);
 
     await this.store.updateSession(championId, {
       lastUsed: new Date().toISOString(),
@@ -150,7 +179,13 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      return this.codexBackend.getLastAssistantMessages(championId, count);
+      const safeCount = Math.max(1, count);
+      const sessionMessages = session.lastAssistantMessages ?? [];
+      if (sessionMessages.length > 0) {
+        return sessionMessages.slice(-safeCount);
+      }
+
+      return this.codexBackend.getLastAssistantMessages(championId, safeCount);
     }
 
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
@@ -164,7 +199,16 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      return this.codexBackend.getSessionStatus(championId);
+      if (session.lastTurnStatus === 'failed') {
+        const suffix = session.lastTurnError ? `: ${session.lastTurnError}` : '';
+        throw new Error(`Codex turn failed${suffix}`);
+      }
+
+      if (session.lastTurnStatus === 'interrupted') {
+        return 'working';
+      }
+
+      return 'idle';
     }
 
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
@@ -178,33 +222,30 @@ export class SessionManager {
 
     if (session.cli === 'codex') {
       const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
-      const waitResult = await this.codexBackend.waitForTurn(session.championId, timeoutMs);
 
-      if (waitResult.timedOut) {
-        return {
-          completed: false,
-          timedOut: true,
-          elapsedMs: waitResult.elapsedMs
-        };
+      if (session.lastTurnStatus === 'failed') {
+        const message = session.lastTurnError
+          ? `Codex turn failed: ${session.lastTurnError}`
+          : 'Codex turn failed';
+        throw new Error(message);
       }
 
       await this.store.updateSession(championId, {
-        lastUsed: new Date().toISOString(),
-        lastTurnStatus: waitResult.status,
-        lastTurnError: waitResult.errorMessage
+        lastUsed: new Date().toISOString()
       });
 
-      if (waitResult.status === 'failed') {
-        const message = waitResult.errorMessage
-          ? `Codex turn failed: ${waitResult.errorMessage}`
-          : 'Codex turn failed';
-        throw new Error(message);
+      if (session.lastTurnStatus === 'interrupted') {
+        return {
+          completed: false,
+          timedOut: true,
+          elapsedMs: timeoutMs
+        };
       }
 
       return {
         completed: true,
         timedOut: false,
-        elapsedMs: waitResult.elapsedMs
+        elapsedMs: 0
       };
     }
 
@@ -213,6 +254,7 @@ export class SessionManager {
     const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
     const startTime = Date.now();
     const deadline = startTime + timeoutMs;
+    const latestSendMs = Date.parse(session.lastUsed);
     const initialEntries = await readClaudeTranscript(transcriptPath);
     const baselineAssistantCount = countAssistantMessages(initialEntries);
 
@@ -243,7 +285,10 @@ export class SessionManager {
 
       if (
         hasAssistantResponseAfterLatestUser(cachedEntries) &&
-        countAssistantMessages(cachedEntries) > baselineAssistantCount
+        (
+          countAssistantMessages(cachedEntries) > baselineAssistantCount ||
+          this.hasAssistantResponseAtOrAfter(cachedEntries, latestSendMs)
+        )
       ) {
         await this.store.updateSession(championId, {
           lastUsed: new Date().toISOString()
@@ -296,6 +341,29 @@ export class SessionManager {
   private async sleep(ms: number): Promise<void> {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
+    });
+  }
+
+  private hasAssistantResponseAtOrAfter(
+    entries: Awaited<ReturnType<typeof readClaudeTranscript>>,
+    thresholdMs: number
+  ): boolean {
+    if (!Number.isFinite(thresholdMs)) {
+      return false;
+    }
+
+    return entries.some((entry) => {
+      if (entry.type?.toLowerCase() !== 'assistant') {
+        return false;
+      }
+
+      const timestamp = entry.timestamp;
+      if (typeof timestamp !== 'string') {
+        return false;
+      }
+
+      const parsed = Date.parse(timestamp);
+      return !Number.isNaN(parsed) && parsed >= thresholdMs;
     });
   }
 }

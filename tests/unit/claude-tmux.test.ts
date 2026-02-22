@@ -110,4 +110,45 @@ describe('ClaudeTmuxBackend', () => {
       expect.any(Function)
     );
   });
+
+  it('sends message text and enter keys in separate tmux commands', async () => {
+    vi.useFakeTimers();
+
+    class TestBackend extends ClaudeTmuxBackend {
+      override async isClaudeRunning(): Promise<boolean> {
+        return true;
+      }
+    }
+
+    const backend = new TestBackend();
+    const sendPromise = backend.sendMessage('dev-volibear-top', "echo 'hello from test'");
+    await vi.advanceTimersByTimeAsync(225);
+    await sendPromise;
+
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      1,
+      'bash',
+      [
+        '-lc',
+        expect.stringContaining("tmux send-keys -l -t 'dev-volibear-top' \"$decoded\"")
+      ],
+      expect.any(Object),
+      expect.any(Function)
+    );
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      2,
+      'tmux',
+      ['send-keys', '-t', 'dev-volibear-top', 'C-m'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      3,
+      'tmux',
+      ['send-keys', '-t', 'dev-volibear-top', 'C-m'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
 });

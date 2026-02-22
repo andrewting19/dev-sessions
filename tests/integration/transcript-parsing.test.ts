@@ -136,8 +136,8 @@ describe('transcript parsing integration', () => {
 
   it('sanitizes real Claude workspace paths into transcript project directory names', () => {
     expect(sanitizeWorkspacePath('/Users/andrew/Documents/git_repos/dev-sessions'))
-      .toBe('-Users-andrew-Documents-git_repos-dev-sessions');
+      .toBe('-Users-andrew-Documents-git-repos-dev-sessions');
     expect(sanitizeWorkspacePath('/Users/andrew/Documents/git_repos/claude-ting'))
-      .toBe('-Users-andrew-Documents-git_repos-claude-ting');
+      .toBe('-Users-andrew-Documents-git-repos-claude-ting');
   });
 });

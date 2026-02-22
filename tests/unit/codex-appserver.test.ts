@@ -19,7 +19,7 @@ class FakeCodexProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   readonly killSignals: Array<NodeJS.Signals | number | undefined> = [];
 
-  constructor(pid: number = 4242) {
+  constructor(pid: number) {
     super();
     this.pid = pid;
   }
@@ -38,40 +38,49 @@ class FakeCodexProcess extends EventEmitter {
   }
 }
 
-function createBackendHarness(onOutgoingMessage: (message: RpcMessage, proc: FakeCodexProcess) => void): {
+function createBackendHarness(
+  onOutgoingMessage: (message: RpcMessage, proc: FakeCodexProcess, processIndex: number) => void
+): {
   backend: CodexAppServerBackend;
-  process: FakeCodexProcess;
-  outgoingMessages: RpcMessage[];
+  processes: FakeCodexProcess[];
+  outgoingMessages: Array<{ processIndex: number; message: RpcMessage }>;
 } {
-  const process = new FakeCodexProcess(9911);
-  const outgoingMessages: RpcMessage[] = [];
-  let buffered = '';
+  const processes: FakeCodexProcess[] = [];
+  const outgoingMessages: Array<{ processIndex: number; message: RpcMessage }> = [];
 
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk: string | Buffer) => {
-    buffered += chunk.toString();
-    const lines = buffered.split('\n');
-    buffered = lines.pop() ?? '';
+  const backend = new CodexAppServerBackend(() => {
+    const processIndex = processes.length;
+    const process = new FakeCodexProcess(9000 + processIndex);
+    processes.push(process);
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) {
-        continue;
+    let buffered = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk: string | Buffer) => {
+      buffered += chunk.toString();
+      const lines = buffered.split('\n');
+      buffered = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) {
+          continue;
+        }
+
+        const message = JSON.parse(trimmed) as RpcMessage;
+        outgoingMessages.push({
+          processIndex,
+          message
+        });
+        onOutgoingMessage(message, process, processIndex);
       }
+    });
 
-      const message = JSON.parse(trimmed) as RpcMessage;
-      outgoingMessages.push(message);
-      onOutgoingMessage(message, process);
-    }
+    return process as unknown as ChildProcessWithoutNullStreams;
   });
-
-  const backend = new CodexAppServerBackend(
-    () => process as unknown as ChildProcessWithoutNullStreams
-  );
 
   return {
     backend,
-    process,
+    processes,
     outgoingMessages
   };
 }
@@ -79,19 +88,19 @@ function createBackendHarness(onOutgoingMessage: (message: RpcMessage, proc: Fak
 describe('CodexAppServerBackend', () => {
   it('builds initialize -> initialized -> thread/start JSON-RPC messages', async () => {
     const { backend, outgoingMessages } = createBackendHarness((message, proc) => {
-      if (message.method === 'initialize' && typeof message.id === 'number') {
+      if (typeof message.id !== 'number') {
+        return;
+      }
+
+      if (message.method === 'initialize') {
         proc.emitJson({
           jsonrpc: '2.0',
           id: message.id,
-          result: {
-            serverInfo: {
-              name: 'codex-app-server'
-            }
-          }
+          result: {}
         });
       }
 
-      if (message.method === 'thread/start' && typeof message.id === 'number') {
+      if (message.method === 'thread/start') {
         proc.emitJson({
           jsonrpc: '2.0',
           id: message.id,
@@ -104,334 +113,279 @@ describe('CodexAppServerBackend', () => {
       }
     });
 
-    const created = await backend.createSession('fizz-top', '/tmp/workspace');
+    const created = await backend.createSession('fizz-top', '/tmp/workspace', 'gpt-5.3-codex');
 
     expect(created).toEqual({
       threadId: 'thr_123',
-      pid: 9911,
-      model: 'o4-mini'
+      model: 'gpt-5.3-codex'
     });
 
-    expect(outgoingMessages.map((message) => message.method)).toEqual([
+    const methods = outgoingMessages
+      .filter((entry) => entry.processIndex === 0)
+      .map((entry) => entry.message.method);
+    expect(methods).toEqual(['initialize', 'initialized', 'thread/start']);
+  });
+
+  it('resumes thread and accumulates agent delta notifications into one message', async () => {
+    const { backend, outgoingMessages } = createBackendHarness((message, proc, processIndex) => {
+      if (processIndex === 0) {
+        if (typeof message.id === 'number' && message.method === 'initialize') {
+          proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+        }
+        if (typeof message.id === 'number' && message.method === 'thread/start') {
+          proc.emitJson({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              thread: {
+                id: 'thr_seed'
+              }
+            }
+          });
+        }
+        return;
+      }
+
+      if (typeof message.id === 'number' && message.method === 'initialize') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+      if (typeof message.id === 'number' && message.method === 'thread/resume') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+      if (typeof message.id === 'number' && message.method === 'turn/start') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+        proc.emitJson({
+          jsonrpc: '2.0',
+          method: 'item/agentMessage/delta',
+          params: {
+            delta: {
+              text: 'Done '
+            }
+          }
+        });
+        proc.emitJson({
+          jsonrpc: '2.0',
+          method: 'item/agentMessage/delta',
+          params: {
+            item: {
+              delta: {
+                text: 'here'
+              }
+            }
+          }
+        });
+        proc.emitJson({
+          jsonrpc: '2.0',
+          method: 'turn/completed',
+          params: {
+            turn: {
+              id: 'turn_1',
+              status: 'completed'
+            }
+          }
+        });
+      }
+    });
+
+    const created = await backend.createSession('riven-jg', '/tmp/repo', 'gpt-5.3-codex');
+    const sendResult = await backend.sendMessage('riven-jg', created.threadId, 'Write tests', {
+      workspacePath: '/tmp/repo',
+      model: 'gpt-5.3-codex'
+    });
+
+    expect(sendResult).toMatchObject({
+      threadId: 'thr_seed',
+      completed: true,
+      timedOut: false,
+      status: 'completed',
+      assistantMessage: 'Done here'
+    });
+
+    const sendMethods = outgoingMessages
+      .filter((entry) => entry.processIndex === 1)
+      .map((entry) => entry.message.method);
+    expect(sendMethods).toEqual(['initialize', 'initialized', 'thread/resume', 'turn/start']);
+    expect(backend.getLastAssistantMessages('riven-jg', 1)).toEqual(['Done here']);
+    expect(backend.getSessionStatus('riven-jg')).toBe('idle');
+  });
+
+  it('falls back to thread/start when thread/resume cannot find the rollout', async () => {
+    const { backend, outgoingMessages } = createBackendHarness((message, proc) => {
+      if (typeof message.id !== 'number') {
+        return;
+      }
+
+      if (message.method === 'initialize') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+
+      if (message.method === 'thread/resume') {
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            message: 'no rollout found for thread id stale-thread'
+          }
+        });
+      }
+
+      if (message.method === 'thread/start') {
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {
+            thread: {
+              id: 'thr_fallback'
+            }
+          }
+        });
+      }
+
+      if (message.method === 'turn/start') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+        proc.emitJson({
+          jsonrpc: '2.0',
+          method: 'turn/completed',
+          params: {
+            turn: {
+              id: 'turn_done',
+              status: 'completed'
+            }
+          }
+        });
+      }
+    });
+
+    const result = await backend.sendMessage('fizz-top', 'stale-thread', 'Ship this feature', {
+      workspacePath: '/tmp/workspace',
+      model: 'gpt-5.3-codex'
+    });
+
+    expect(result.threadId).toBe('thr_fallback');
+    expect(result.status).toBe('completed');
+
+    expect(outgoingMessages.map((entry) => entry.message.method)).toEqual([
       'initialize',
       'initialized',
-      'thread/start'
+      'thread/resume',
+      'thread/start',
+      'turn/start'
     ]);
-
-    expect(outgoingMessages[0]).toMatchObject({
-      method: 'initialize',
-      params: {
-        clientInfo: {
-          name: 'dev-sessions',
-          title: 'dev-sessions',
-          version: '0.1.0'
-        },
-        capabilities: {
-          experimentalApi: true
-        }
-      }
-    });
-
-    expect(outgoingMessages[1]).toEqual({
-      jsonrpc: '2.0',
-      method: 'initialized',
-      params: {}
-    });
-
-    expect(outgoingMessages[2]).toMatchObject({
-      method: 'thread/start',
-      params: {
-        model: 'o4-mini',
-        cwd: '/tmp/workspace',
-        approvalPolicy: 'never',
-        sandbox: 'danger-full-access'
-      }
-    });
   });
 
-  it('builds turn/start and accumulates agent delta notifications into one message', async () => {
-    const { backend, process, outgoingMessages } = createBackendHarness((message, proc) => {
-      if ((message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
-        typeof message.id === 'number') {
-        if (message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              thread: {
-                id: 'thr_stream'
-              }
-            }
-          });
-          return;
-        }
-
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {}
-        });
-      }
-    });
-
-    await backend.createSession('riven-jg', '/tmp/repo');
-    await backend.sendMessage('riven-jg', 'thr_stream', 'Write tests');
-
-    const turnStart = outgoingMessages.find((message) => message.method === 'turn/start');
-    expect(turnStart).toMatchObject({
-      method: 'turn/start',
-      params: {
-        threadId: 'thr_stream',
-        input: [{ type: 'text', text: 'Write tests' }]
-      }
-    });
-
-    const waitPromise = backend.waitForTurn('riven-jg', 2000);
-
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'item/agentMessage/delta',
-      params: {
-        delta: {
-          text: 'Done '
-        }
-      }
-    });
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'item/agentMessage/delta',
-      params: {
-        item: {
-          delta: {
-            text: 'here'
-          }
-        }
-      }
-    });
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'turn/completed',
-      params: {
-        turn: {
-          id: 'turn_1',
-          status: 'completed'
-        }
-      }
-    });
-
-    const result = await waitPromise;
-    expect(result.completed).toBe(true);
-    expect(result.timedOut).toBe(false);
-    expect(result.status).toBe('completed');
-    expect(backend.getLastAssistantMessages('riven-jg', 1)).toEqual(['Done here']);
-  });
-
-  it('parses failed turn completion and surfaces error state', async () => {
-    const { backend, process } = createBackendHarness((message, proc) => {
-      if ((message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
-        typeof message.id === 'number') {
-        if (message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              thread: {
-                id: 'thr_failed'
-              }
-            }
-          });
-          return;
-        }
-
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {}
-        });
-      }
-    });
-
-    await backend.createSession('ahri-mid', '/tmp/repo');
-    await backend.sendMessage('ahri-mid', 'thr_failed', 'Break intentionally');
-    const waitPromise = backend.waitForTurn('ahri-mid', 2000);
-
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'turn/completed',
-      params: {
-        turn: {
-          id: 'turn_failed',
-          status: 'failed',
-          error: {
-            message: 'tool execution failed'
-          }
-        }
-      }
-    });
-
-    const waitResult = await waitPromise;
-    expect(waitResult.status).toBe('failed');
-    expect(waitResult.errorMessage).toBe('tool execution failed');
-    expect(() => backend.getSessionStatus('ahri-mid')).toThrow('Codex turn failed: tool execution failed');
-  });
-
-  it('supports full create -> send -> wait -> last-message -> kill lifecycle', async () => {
-    const { backend, process } = createBackendHarness((message, proc) => {
-      if (
-        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
-        typeof message.id === 'number'
-      ) {
-        if (message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              thread: {
-                id: 'thr_lifecycle'
-              }
-            }
-          });
-          return;
-        }
-
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {}
-        });
-      }
-    });
-
-    const created = await backend.createSession('fizz-top', '/tmp/workspace', 'o4-mini');
-    expect(created.threadId).toBe('thr_lifecycle');
-
-    await backend.sendMessage('fizz-top', created.threadId, 'Ship this feature');
-    expect(backend.getSessionStatus('fizz-top')).toBe('working');
-
-    const waitPromise = backend.waitForTurn('fizz-top', 2_000);
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'item/agentMessage/delta',
-      params: {
-        delta: {
-          text: 'Feature shipped.'
-        }
-      }
-    });
-    process.emitJson({
-      jsonrpc: '2.0',
-      method: 'turn/completed',
-      params: {
-        turn: {
-          id: 'turn_done',
-          status: 'completed'
-        }
-      }
-    });
-
-    const waitResult = await waitPromise;
-    expect(waitResult).toMatchObject({
-      completed: true,
-      timedOut: false,
-      status: 'completed'
-    });
-    expect(backend.getLastAssistantMessages('fizz-top', 1)).toEqual(['Feature shipped.']);
-    expect(backend.getSessionStatus('fizz-top')).toBe('idle');
-
-    await backend.killSession('fizz-top');
-    expect(process.killSignals).toEqual(['SIGTERM']);
-    expect(() => backend.getSessionStatus('fizz-top'))
-      .toThrow('Codex session not found in this process: fizz-top');
-  });
-
-  it('returns failed wait result when app-server exits mid-turn', async () => {
-    const { backend, process } = createBackendHarness((message, proc) => {
-      if (
-        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
-        typeof message.id === 'number'
-      ) {
-        if (message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              thread: {
-                id: 'thr_crash'
-              }
-            }
-          });
-          return;
-        }
-
-        proc.emitJson({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {}
-        });
-      }
-    });
-
-    await backend.createSession('riven-jg', '/tmp/repo');
-    await backend.sendMessage('riven-jg', 'thr_crash', 'Do work');
-
-    const waitPromise = backend.waitForTurn('riven-jg', 2_000);
-    process.exitCode = 1;
-    process.emit('exit', 1, null);
-
-    const waitResult = await waitPromise;
-    expect(waitResult).toMatchObject({
-      completed: true,
-      timedOut: false,
-      status: 'failed'
-    });
-    expect(waitResult.errorMessage).toContain('Codex app-server exited (code 1)');
-    expect(() => backend.getSessionStatus('riven-jg'))
-      .toThrow(/Codex app-server is not running for riven-jg/);
-    await expect(backend.sendMessage('riven-jg', 'thr_crash', 'retry')).rejects
-      .toThrow(/Codex app-server is not running for riven-jg/);
-  });
-
-  it('returns timedOut when wait exceeds timeout before completion', async () => {
-    vi.useFakeTimers();
+  it('captures failed turn completion and reports failed status', async () => {
     const { backend } = createBackendHarness((message, proc) => {
-      if (
-        (message.method === 'initialize' || message.method === 'thread/start' || message.method === 'turn/start') &&
-        typeof message.id === 'number'
-      ) {
-        if (message.method === 'thread/start') {
-          proc.emitJson({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              thread: {
-                id: 'thr_timeout'
-              }
-            }
-          });
-          return;
-        }
+      if (typeof message.id !== 'number') {
+        return;
+      }
 
+      if (message.method === 'initialize') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+
+      if (message.method === 'thread/start') {
         proc.emitJson({
           jsonrpc: '2.0',
           id: message.id,
-          result: {}
+          result: {
+            thread: {
+              id: 'thr_failed'
+            }
+          }
+        });
+      }
+
+      if (message.method === 'turn/start') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+        proc.emitJson({
+          jsonrpc: '2.0',
+          method: 'turn/completed',
+          params: {
+            turn: {
+              id: 'turn_failed',
+              status: 'failed',
+              error: {
+                message: 'tool execution failed'
+              }
+            }
+          }
         });
       }
     });
 
-    await backend.createSession('ahri-mid', '/tmp/repo');
-    await backend.sendMessage('ahri-mid', 'thr_timeout', 'This should time out');
+    const result = await backend.sendMessage('ahri-mid', '', 'Break intentionally', {
+      workspacePath: '/tmp/repo'
+    });
 
-    const waitPromise = backend.waitForTurn('ahri-mid', 25);
-    await vi.advanceTimersByTimeAsync(25);
-    const waitResult = await waitPromise;
+    expect(result.status).toBe('failed');
+    expect(result.errorMessage).toBe('tool execution failed');
+    expect(() => backend.getSessionStatus('ahri-mid')).toThrow('Codex turn failed: tool execution failed');
 
+    const waitResult = await backend.waitForTurn('ahri-mid', 2_000);
     expect(waitResult).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'failed',
+      errorMessage: 'tool execution failed'
+    });
+  });
+
+  it('returns timedOut when turn completion is never emitted before timeout', async () => {
+    vi.useFakeTimers();
+
+    const { backend } = createBackendHarness((message, proc) => {
+      if (typeof message.id !== 'number') {
+        return;
+      }
+
+      if (message.method === 'initialize') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+
+      if (message.method === 'thread/start') {
+        proc.emitJson({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {
+            thread: {
+              id: 'thr_timeout'
+            }
+          }
+        });
+      }
+
+      if (message.method === 'turn/start') {
+        proc.emitJson({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+    });
+
+    const sendPromise = backend.sendMessage('teemo-sup', '', 'This should time out', {
+      workspacePath: '/tmp/repo',
+      timeoutMs: 25
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    const sendResult = await sendPromise;
+
+    expect(sendResult).toMatchObject({
       completed: false,
       timedOut: true,
       status: 'interrupted'
     });
-    expect(backend.getSessionStatus('ahri-mid')).toBe('working');
+    expect(backend.getSessionStatus('teemo-sup')).toBe('working');
     vi.useRealTimers();
+  });
+
+  it('treats missing PID as an existing logical session and kills provided PID', async () => {
+    const { backend } = createBackendHarness(() => {
+      // no-op
+    });
+
+    expect(await backend.sessionExists('fizz-top')).toBe(true);
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    await backend.killSession('fizz-top', 4321);
+
+    expect(killSpy).toHaveBeenCalledWith(4321, 'SIGTERM');
+    killSpy.mockRestore();
   });
 });

@@ -35,6 +35,9 @@ function isStoredSession(value: unknown): value is StoredSession {
       candidate.lastTurnStatus === 'failed' ||
       candidate.lastTurnStatus === 'interrupted') &&
     (candidate.lastTurnError === undefined || typeof candidate.lastTurnError === 'string') &&
+    (candidate.lastAssistantMessages === undefined ||
+      (Array.isArray(candidate.lastAssistantMessages) &&
+        candidate.lastAssistantMessages.every((message) => typeof message === 'string'))) &&
     typeof candidate.createdAt === 'string' &&
     typeof candidate.lastUsed === 'string'
   );

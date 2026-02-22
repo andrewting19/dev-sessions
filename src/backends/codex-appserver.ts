@@ -18,6 +18,7 @@ interface PendingRequest {
   method: string;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
+  timeoutHandle: NodeJS.Timeout;
 }
 
 interface TurnWaiter {
@@ -31,21 +32,21 @@ interface CodexSessionRuntime {
   nextRequestId: number;
   stdoutBuffer: string;
   pendingRequests: Map<number, PendingRequest>;
-  turnInProgress: boolean;
-  currentTurnText: string;
-  assistantHistory: string[];
   waiters: TurnWaiter[];
-  threadId?: string;
-  model: string;
-  workspacePath: string;
+  currentTurnText: string;
   lastTurnStatus?: TurnCompletionStatus;
   lastTurnError?: string;
   exited: boolean;
 }
 
+interface SessionState {
+  assistantHistory: string[];
+  lastTurnStatus?: TurnCompletionStatus;
+  lastTurnError?: string;
+}
+
 export interface CodexSessionCreateResult {
   threadId: string;
-  pid: number;
   model: string;
 }
 
@@ -57,10 +58,23 @@ export interface CodexTurnWaitResult {
   errorMessage?: string;
 }
 
+export interface CodexSendMessageOptions {
+  workspacePath: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+export interface CodexTurnSendResult extends CodexTurnWaitResult {
+  threadId: string;
+  assistantMessage: string;
+}
+
 export type SpawnCodexProcess = () => ChildProcessWithoutNullStreams;
 
-const DEFAULT_MODEL = 'o4-mini';
+const DEFAULT_MODEL = 'gpt-5.3-codex';
 const DEFAULT_TIMEOUT_MS = 300_000;
+const REQUEST_TIMEOUT_MS = 60_000;
+const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not found/i;
 
 function defaultSpawnCodexProcess(): ChildProcessWithoutNullStreams {
   return spawn('codex', ['app-server'], {
@@ -69,7 +83,7 @@ function defaultSpawnCodexProcess(): ChildProcessWithoutNullStreams {
 }
 
 export class CodexAppServerBackend {
-  private readonly sessions = new Map<string, CodexSessionRuntime>();
+  private readonly sessionState = new Map<string, SessionState>();
 
   constructor(private readonly spawnProcess: SpawnCodexProcess = defaultSpawnCodexProcess) {}
 
@@ -78,185 +92,212 @@ export class CodexAppServerBackend {
     workspacePath: string,
     model: string = DEFAULT_MODEL
   ): Promise<CodexSessionCreateResult> {
-    if (this.sessions.has(championId)) {
-      throw new Error(`Codex session already exists: ${championId}`);
-    }
-
-    const runtime = this.startRuntime(championId, workspacePath, model);
-    this.sessions.set(championId, runtime);
+    const runtime = this.startRuntime();
 
     try {
-      await this.request(runtime, 'initialize', {
-        clientInfo: {
-          name: 'dev-sessions',
-          title: 'dev-sessions',
-          version: '0.1.0'
-        },
-        capabilities: {
-          experimentalApi: true
-        }
-      });
-
-      this.notify(runtime, 'initialized', {});
-
+      await this.initializeRuntime(runtime);
       const threadResult = await this.request(runtime, 'thread/start', {
         model,
         cwd: workspacePath,
         approvalPolicy: 'never',
-        sandbox: 'danger-full-access'
+        sandbox: 'danger-full-access',
+        ephemeral: false,
+        persistExtendedHistory: true,
+        experimentalRawEvents: false
       });
 
       const threadId = this.extractThreadId(threadResult);
-      runtime.threadId = threadId;
+      this.ensureSessionState(championId);
 
       return {
         threadId,
-        pid: this.requirePid(runtime.process),
         model
       };
-    } catch (error: unknown) {
+    } finally {
       await this.killRuntime(runtime);
-      this.sessions.delete(championId);
-      throw error;
     }
   }
 
-  async sendMessage(championId: string, threadId: string, message: string): Promise<void> {
-    const runtime = this.requireRuntime(championId);
-    this.ensureUsableRuntime(championId, runtime);
-
-    if (runtime.threadId !== threadId) {
-      throw new Error(`Thread mismatch for ${championId}`);
+  async sendMessage(
+    championId: string,
+    threadId: string,
+    message: string,
+    options?: CodexSendMessageOptions
+  ): Promise<CodexTurnSendResult> {
+    if (!options || options.workspacePath.trim().length === 0) {
+      throw new Error('Codex workspace path is required to send a message');
     }
 
-    if (runtime.turnInProgress) {
-      throw new Error(`A turn is already running for ${championId}`);
-    }
+    const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const model = options.model ?? DEFAULT_MODEL;
+    const runtime = this.startRuntime();
+    const state = this.ensureSessionState(championId);
 
-    runtime.turnInProgress = true;
-    runtime.currentTurnText = '';
-    runtime.lastTurnStatus = undefined;
-    runtime.lastTurnError = undefined;
+    let activeThreadId = threadId.trim();
 
     try {
+      await this.initializeRuntime(runtime);
+
+      if (activeThreadId.length > 0) {
+        try {
+          await this.request(runtime, 'thread/resume', {
+            threadId: activeThreadId,
+            cwd: options.workspacePath,
+            model,
+            approvalPolicy: 'never',
+            sandbox: 'danger-full-access',
+            persistExtendedHistory: true
+          });
+        } catch (error: unknown) {
+          if (!this.isResumeNotFoundError(error)) {
+            throw error;
+          }
+
+          activeThreadId = '';
+        }
+      }
+
+      if (activeThreadId.length === 0) {
+        const threadResult = await this.request(runtime, 'thread/start', {
+          model,
+          cwd: options.workspacePath,
+          approvalPolicy: 'never',
+          sandbox: 'danger-full-access',
+          ephemeral: false,
+          persistExtendedHistory: true,
+          experimentalRawEvents: false
+        });
+        activeThreadId = this.extractThreadId(threadResult);
+      }
+
       await this.request(runtime, 'turn/start', {
-        threadId,
+        threadId: activeThreadId,
         input: [{ type: 'text', text: message }]
       });
-    } catch (error: unknown) {
-      runtime.turnInProgress = false;
-      throw error;
+
+      const waitResult = await this.waitForTurnCompletion(runtime, timeoutMs);
+      const assistantMessage = runtime.currentTurnText;
+
+      state.lastTurnStatus = waitResult.status;
+      state.lastTurnError = waitResult.errorMessage;
+
+      if (assistantMessage.length > 0) {
+        state.assistantHistory.push(assistantMessage);
+      }
+
+      return {
+        ...waitResult,
+        threadId: activeThreadId,
+        assistantMessage
+      };
+    } finally {
+      await this.killRuntime(runtime);
     }
   }
 
   async waitForTurn(championId: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CodexTurnWaitResult> {
-    const runtime = this.requireRuntime(championId);
-    this.ensureUsableRuntime(championId, runtime);
-
-    if (!runtime.turnInProgress) {
-      const status = runtime.lastTurnStatus ?? 'completed';
-
+    const state = this.sessionState.get(championId);
+    if (!state || !state.lastTurnStatus) {
       return {
         completed: true,
         timedOut: false,
         elapsedMs: 0,
-        status,
-        errorMessage: runtime.lastTurnError
+        status: 'completed'
       };
     }
 
-    const safeTimeout = Math.max(1, timeoutMs);
+    if (state.lastTurnStatus === 'interrupted') {
+      return {
+        completed: false,
+        timedOut: true,
+        elapsedMs: Math.max(1, timeoutMs),
+        status: 'interrupted',
+        errorMessage: state.lastTurnError
+      };
+    }
 
-    return new Promise<CodexTurnWaitResult>((resolve) => {
-      const startTime = Date.now();
-      const timeoutHandle = setTimeout(() => {
-        runtime.waiters = runtime.waiters.filter((waiter) => waiter.timeoutHandle !== timeoutHandle);
-        resolve({
-          completed: false,
-          timedOut: true,
-          elapsedMs: Date.now() - startTime,
-          status: 'interrupted'
-        });
-      }, safeTimeout);
-
-      runtime.waiters.push({
-        startTime,
-        timeoutHandle,
-        resolve
-      });
-    });
+    return {
+      completed: true,
+      timedOut: false,
+      elapsedMs: 0,
+      status: state.lastTurnStatus,
+      errorMessage: state.lastTurnError
+    };
   }
 
   getLastAssistantMessages(championId: string, count: number): string[] {
-    const runtime = this.requireRuntime(championId);
+    const state = this.ensureSessionState(championId);
     const safeCount = Math.max(1, count);
-    return runtime.assistantHistory.slice(-safeCount);
+    return state.assistantHistory.slice(-safeCount);
   }
 
   getSessionStatus(championId: string): AgentTurnStatus {
-    const runtime = this.requireRuntime(championId);
-    this.ensureUsableRuntime(championId, runtime);
+    const state = this.ensureSessionState(championId);
 
-    if (runtime.turnInProgress) {
-      return 'working';
+    if (state.lastTurnStatus === 'failed') {
+      const suffix = state.lastTurnError ? `: ${state.lastTurnError}` : '';
+      throw new Error(`Codex turn failed${suffix}`);
     }
 
-    if (runtime.lastTurnStatus === 'failed') {
-      const suffix = runtime.lastTurnError ? `: ${runtime.lastTurnError}` : '';
-      throw new Error(`Codex turn failed${suffix}`);
+    if (state.lastTurnStatus === 'interrupted') {
+      return 'working';
     }
 
     return 'idle';
   }
 
   async killSession(championId: string, pid?: number): Promise<void> {
-    const runtime = this.sessions.get(championId);
-    if (runtime) {
-      await this.killRuntime(runtime);
-      this.sessions.delete(championId);
+    this.sessionState.delete(championId);
+
+    if (typeof pid !== 'number') {
       return;
     }
 
-    if (typeof pid === 'number') {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-          throw error;
-        }
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        throw error;
       }
     }
   }
 
-  async sessionExists(championId: string, pid?: number): Promise<boolean> {
-    const runtime = this.sessions.get(championId);
-    if (runtime) {
-      const processPid = runtime.process.pid;
-      return !runtime.exited && typeof processPid === 'number' && this.isProcessRunning(processPid);
+  async sessionExists(_championId: string, pid?: number): Promise<boolean> {
+    if (typeof pid !== 'number') {
+      return true;
     }
 
-    return typeof pid === 'number' ? this.isProcessRunning(pid) : false;
+    return this.isProcessRunning(pid);
   }
 
-  private startRuntime(championId: string, workspacePath: string, model: string): CodexSessionRuntime {
+  private ensureSessionState(championId: string): SessionState {
+    const existing = this.sessionState.get(championId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: SessionState = {
+      assistantHistory: []
+    };
+    this.sessionState.set(championId, created);
+    return created;
+  }
+
+  private startRuntime(): CodexSessionRuntime {
     const child = this.spawnProcess();
     const runtime: CodexSessionRuntime = {
       process: child,
       nextRequestId: 1,
       stdoutBuffer: '',
       pendingRequests: new Map<number, PendingRequest>(),
-      turnInProgress: false,
-      currentTurnText: '',
-      assistantHistory: [],
       waiters: [],
-      model,
-      workspacePath,
+      currentTurnText: '',
       exited: false
     };
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string | Buffer) => {
-      this.handleStdoutData(championId, runtime, chunk.toString());
+      this.handleStdoutData(runtime, chunk.toString());
     });
 
     child.on('error', (error: Error) => {
@@ -271,7 +312,22 @@ export class CodexAppServerBackend {
     return runtime;
   }
 
-  private handleStdoutData(championId: string, runtime: CodexSessionRuntime, chunk: string): void {
+  private async initializeRuntime(runtime: CodexSessionRuntime): Promise<void> {
+    await this.request(runtime, 'initialize', {
+      clientInfo: {
+        name: 'dev-sessions',
+        title: 'dev-sessions',
+        version: '0.1.0'
+      },
+      capabilities: {
+        experimentalApi: true
+      }
+    });
+
+    this.notify(runtime, 'initialized', {});
+  }
+
+  private handleStdoutData(runtime: CodexSessionRuntime, chunk: string): void {
     runtime.stdoutBuffer += chunk;
     const lines = runtime.stdoutBuffer.split('\n');
     runtime.stdoutBuffer = lines.pop() ?? '';
@@ -289,11 +345,11 @@ export class CodexAppServerBackend {
         continue;
       }
 
-      this.handleRpcMessage(championId, runtime, payload);
+      this.handleRpcMessage(runtime, payload);
     }
   }
 
-  private handleRpcMessage(championId: string, runtime: CodexSessionRuntime, payload: unknown): void {
+  private handleRpcMessage(runtime: CodexSessionRuntime, payload: unknown): void {
     if (!payload || typeof payload !== 'object') {
       return;
     }
@@ -304,7 +360,7 @@ export class CodexAppServerBackend {
     }
 
     if ('method' in payload && typeof (payload as { method?: unknown }).method === 'string') {
-      this.handleNotification(championId, runtime, payload as { method: string; params?: unknown });
+      this.handleNotification(runtime, payload as { method: string; params?: unknown });
     }
   }
 
@@ -315,6 +371,7 @@ export class CodexAppServerBackend {
     }
 
     runtime.pendingRequests.delete(response.id);
+    clearTimeout(pending.timeoutHandle);
 
     if (response.error) {
       const message = response.error.message ?? 'Unknown JSON-RPC error';
@@ -325,16 +382,7 @@ export class CodexAppServerBackend {
     pending.resolve(response.result);
   }
 
-  private handleNotification(
-    _championId: string,
-    runtime: CodexSessionRuntime,
-    notification: { method: string; params?: unknown }
-  ): void {
-    if (notification.method === 'turn/started') {
-      runtime.turnInProgress = true;
-      return;
-    }
-
+  private handleNotification(runtime: CodexSessionRuntime, notification: { method: string; params?: unknown }): void {
     if (notification.method === 'item/agentMessage/delta') {
       const deltaText = this.extractDeltaText(notification.params);
       if (deltaText.length > 0) {
@@ -350,15 +398,8 @@ export class CodexAppServerBackend {
         return;
       }
 
-      runtime.turnInProgress = false;
       runtime.lastTurnStatus = status;
       runtime.lastTurnError = this.extractTurnError(turn);
-
-      if (runtime.currentTurnText.length > 0) {
-        runtime.assistantHistory.push(runtime.currentTurnText);
-      }
-      runtime.currentTurnText = '';
-
       this.resolveWaiters(runtime, {
         completed: true,
         timedOut: false,
@@ -367,6 +408,42 @@ export class CodexAppServerBackend {
         errorMessage: runtime.lastTurnError
       });
     }
+  }
+
+  private async waitForTurnCompletion(runtime: CodexSessionRuntime, timeoutMs: number): Promise<CodexTurnWaitResult> {
+    if (runtime.lastTurnStatus) {
+      return {
+        completed: true,
+        timedOut: false,
+        elapsedMs: 0,
+        status: runtime.lastTurnStatus,
+        errorMessage: runtime.lastTurnError
+      };
+    }
+
+    const safeTimeout = Math.max(1, timeoutMs);
+
+    return new Promise<CodexTurnWaitResult>((resolve) => {
+      const startTime = Date.now();
+      const timeoutHandle = setTimeout(() => {
+        runtime.waiters = runtime.waiters.filter((waiter) => waiter.timeoutHandle !== timeoutHandle);
+        runtime.lastTurnStatus = 'interrupted';
+        runtime.lastTurnError = 'Timed out waiting for Codex turn completion';
+        resolve({
+          completed: false,
+          timedOut: true,
+          elapsedMs: Date.now() - startTime,
+          status: 'interrupted',
+          errorMessage: runtime.lastTurnError
+        });
+      }, safeTimeout);
+
+      runtime.waiters.push({
+        startTime,
+        timeoutHandle,
+        resolve
+      });
+    });
   }
 
   private resolveWaiters(runtime: CodexSessionRuntime, baseResult: CodexTurnWaitResult): void {
@@ -388,7 +465,6 @@ export class CodexAppServerBackend {
     }
 
     runtime.exited = true;
-    runtime.turnInProgress = false;
     runtime.lastTurnStatus = 'failed';
     runtime.lastTurnError = message;
 
@@ -396,6 +472,7 @@ export class CodexAppServerBackend {
     runtime.pendingRequests.clear();
 
     for (const pending of pendingRequests) {
+      clearTimeout(pending.timeoutHandle);
       pending.reject(new Error(message));
     }
 
@@ -409,14 +486,29 @@ export class CodexAppServerBackend {
   }
 
   private async request(runtime: CodexSessionRuntime, method: string, params?: unknown): Promise<unknown> {
+    if (runtime.exited) {
+      const message = runtime.lastTurnError ?? 'Codex app-server exited';
+      throw new Error(message);
+    }
+
     const id = runtime.nextRequestId;
     runtime.nextRequestId += 1;
 
     return new Promise<unknown>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        const pending = runtime.pendingRequests.get(id);
+        if (!pending) {
+          return;
+        }
+        runtime.pendingRequests.delete(id);
+        pending.reject(new Error(`${method} timed out after ${REQUEST_TIMEOUT_MS}ms`));
+      }, REQUEST_TIMEOUT_MS);
+
       runtime.pendingRequests.set(id, {
         method,
         resolve,
-        reject
+        reject,
+        timeoutHandle
       });
 
       const payload = {
@@ -426,7 +518,13 @@ export class CodexAppServerBackend {
         params
       };
 
-      runtime.process.stdin.write(`${JSON.stringify(payload)}\n`);
+      try {
+        runtime.process.stdin.write(`${JSON.stringify(payload)}\n`);
+      } catch (error: unknown) {
+        runtime.pendingRequests.delete(id);
+        clearTimeout(timeoutHandle);
+        reject(error as Error);
+      }
     });
   }
 
@@ -511,36 +609,20 @@ export class CodexAppServerBackend {
     return undefined;
   }
 
-  private ensureUsableRuntime(championId: string, runtime: CodexSessionRuntime): void {
-    if (runtime.exited) {
-      const details = runtime.lastTurnError ? `: ${runtime.lastTurnError}` : '';
-      throw new Error(`Codex app-server is not running for ${championId}${details}`);
-    }
-  }
-
-  private requireRuntime(championId: string): CodexSessionRuntime {
-    const runtime = this.sessions.get(championId);
-    if (!runtime) {
-      throw new Error(`Codex session not found in this process: ${championId}`);
+  private isResumeNotFoundError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
     }
 
-    return runtime;
-  }
-
-  private requirePid(processHandle: ChildProcessWithoutNullStreams): number {
-    if (typeof processHandle.pid !== 'number') {
-      throw new Error('Codex app-server PID is unavailable');
-    }
-
-    return processHandle.pid;
+    return RESUME_NOT_FOUND_PATTERN.test(error.message);
   }
 
   private async killRuntime(runtime: CodexSessionRuntime): Promise<void> {
-    runtime.exited = true;
-
     const pendingRequests = [...runtime.pendingRequests.values()];
     runtime.pendingRequests.clear();
+
     for (const pending of pendingRequests) {
+      clearTimeout(pending.timeoutHandle);
       pending.reject(new Error('Codex app-server terminated'));
     }
 
@@ -548,8 +630,11 @@ export class CodexAppServerBackend {
       completed: true,
       timedOut: false,
       elapsedMs: 0,
-      status: 'interrupted'
+      status: runtime.lastTurnStatus ?? 'interrupted',
+      errorMessage: runtime.lastTurnError
     });
+
+    runtime.exited = true;
 
     try {
       runtime.process.stdin.end();
