@@ -1,0 +1,3 @@
+{"type":"human","message":{"content":"Implement feature X"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Starting implementation."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done with changes."},{"type":"text","text":"Added tests as requested."}]}}

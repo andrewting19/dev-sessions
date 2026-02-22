@@ -1,0 +1,26 @@
+{
+  "name": "dev-sessions",
+  "version": "0.1.0",
+  "description": "CLI tool to spawn and manage coding agent sessions",
+  "license": "MIT",
+  "bin": {
+    "dev-sessions": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4"
+  }
+}
