@@ -4,6 +4,7 @@ import path from 'node:path';
 import { generateChampionId, toTmuxSessionName } from './champion-ids';
 import { ClaudeTmuxBackend } from './backends/claude-tmux';
 import { CodexAppServerBackend } from './backends/codex-appserver';
+import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { SessionStore, createDefaultSessionStore } from './session-store';
 import {
   countAssistantMessages,
@@ -299,6 +300,18 @@ export class SessionManager {
   }
 }
 
-export function createDefaultSessionManager(): SessionManager {
+export function shouldUseGatewaySessionManager(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.IS_SANDBOX === '1';
+}
+
+export function createDefaultSessionManager(
+  env: NodeJS.ProcessEnv = process.env
+): SessionManager | GatewaySessionManager {
+  if (shouldUseGatewaySessionManager(env)) {
+    return new GatewaySessionManager({
+      baseUrl: resolveGatewayBaseUrl(env)
+    });
+  }
+
   return new SessionManager(createDefaultSessionStore(), new ClaudeTmuxBackend(), new CodexAppServerBackend());
 }

@@ -221,6 +221,18 @@ describe('CLI argument parsing', () => {
     expect(manager.sendMessage).toHaveBeenCalledWith('fizz-top', 'task from file');
   });
 
+  it('supports list --json output', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+    const sessions = [createMockSession('fizz-top')];
+
+    await program.parseAsync(['node', 'dev-sessions', 'list', '--json']);
+
+    expect(manager.listSessions).toHaveBeenCalledTimes(1);
+    expect(output.stdout.trim()).toBe(JSON.stringify(sessions, null, 2));
+  });
+
   it('parses last-message and wait options', async () => {
     const manager = createManagerMock();
     const { io } = createIoCapture();

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, CommanderError, Option } from 'commander';
 import { createDefaultSessionManager, CreateSessionOptions, WaitOptions } from './session-manager';
+import { resolveGatewayPort, startGatewayServer } from './gateway/server';
 import { AgentTurnStatus, StoredSession, WaitResult } from './types';
 
 interface CliIO {
@@ -271,8 +272,14 @@ export function buildProgram(
   program
     .command('list')
     .description('List active sessions')
-    .action(async () => {
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options: { json?: boolean }) => {
       const sessions = await manager.listSessions();
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+        return;
+      }
+
       if (sessions.length === 0) {
         io.stdout.write('No active sessions\n');
         return;
@@ -322,6 +329,16 @@ export function buildProgram(
       }
 
       io.stdout.write('completed\n');
+    });
+
+  program
+    .command('gateway')
+    .description('Start the Docker relay gateway HTTP server')
+    .option('--port <port>', 'Port to listen on', String(resolveGatewayPort()))
+    .action(async (options: { port: string }) => {
+      const port = parsePositiveInteger(options.port, '--port');
+      await startGatewayServer({ port });
+      io.stdout.write(`Gateway listening on port ${port}\n`);
     });
 
   program
