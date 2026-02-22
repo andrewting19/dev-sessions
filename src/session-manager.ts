@@ -8,6 +8,7 @@ import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { SessionStore, createDefaultSessionStore } from './session-store';
 import {
   countAssistantMessages,
+  countSystemEntries,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
   hasAssistantResponseAfterLatestUser,
@@ -155,10 +156,11 @@ export class SessionManager {
     }
 
     const tmuxSessionName = toTmuxSessionName(session.championId);
+    const sendTime = new Date().toISOString();
     await this.claudeBackend.sendMessage(tmuxSessionName, message);
 
     await this.store.updateSession(championId, {
-      lastUsed: new Date().toISOString(),
+      lastUsed: sendTime,
       status: 'active',
       lastTurnStatus: undefined,
       lastTurnError: undefined
@@ -355,6 +357,7 @@ export class SessionManager {
     const latestSendMs = Date.parse(session.lastUsed);
     const initialEntries = await readClaudeTranscript(transcriptPath);
     const baselineAssistantCount = countAssistantMessages(initialEntries);
+    const baselineSystemCount = countSystemEntries(initialEntries);
 
     let lastMtimeMs = -1;
     let shouldReadTranscript = false;
@@ -381,12 +384,31 @@ export class SessionManager {
         shouldReadTranscript = false;
       }
 
+      const status = inferTranscriptStatus(cachedEntries);
+      const hasNewSystemEntry = countSystemEntries(cachedEntries) > baselineSystemCount;
+      const hasNewAssistant = countAssistantMessages(cachedEntries) > baselineAssistantCount;
+      const hasRecentAssistant = this.hasAssistantResponseAtOrAfter(cachedEntries, latestSendMs);
+
+      // Primary signal: a new 'system' entry marks the definitive end of a Claude Code turn.
+      // This avoids false positives from intermediate tool_use assistant entries.
+      if (hasNewSystemEntry && (hasNewAssistant || hasRecentAssistant)) {
+        await this.store.updateSession(championId, {
+          lastUsed: new Date().toISOString()
+        });
+
+        return {
+          completed: true,
+          timedOut: false,
+          elapsedMs: Date.now() - startTime
+        };
+      }
+
+      // Fallback: if inferTranscriptStatus reports idle/waiting and we have new assistant
+      // entries, the turn is complete. This handles transcripts that may not have system entries.
       if (
+        (status === 'idle' || status === 'waiting_for_input') &&
         hasAssistantResponseAfterLatestUser(cachedEntries) &&
-        (
-          countAssistantMessages(cachedEntries) > baselineAssistantCount ||
-          this.hasAssistantResponseAtOrAfter(cachedEntries, latestSendMs)
-        )
+        (hasNewAssistant || hasRecentAssistant)
       ) {
         await this.store.updateSession(championId, {
           lastUsed: new Date().toISOString()

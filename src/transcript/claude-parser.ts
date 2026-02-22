@@ -173,6 +173,10 @@ export function countAssistantMessages(entries: ClaudeTranscriptEntry[]): number
   return entries.reduce((count, entry) => count + (isAssistantMessage(entry) ? 1 : 0), 0);
 }
 
+export function countSystemEntries(entries: ClaudeTranscriptEntry[]): number {
+  return entries.reduce((count, entry) => count + (entry.type === 'system' ? 1 : 0), 0);
+}
+
 function findLastIndex(
   entries: ClaudeTranscriptEntry[],
   predicate: (entry: ClaudeTranscriptEntry) => boolean
@@ -209,6 +213,12 @@ export function inferTranscriptStatus(entries: ClaudeTranscriptEntry[]): AgentTu
   }
 
   const lastEntry = entries[entries.length - 1];
+
+  // A 'system' entry reliably marks the end of a complete turn in Claude Code transcripts.
+  if (lastEntry.type === 'system') {
+    return 'idle';
+  }
+
   if (isAssistantMessage(lastEntry)) {
     return 'idle';
   }
@@ -217,7 +227,24 @@ export function inferTranscriptStatus(entries: ClaudeTranscriptEntry[]): AgentTu
     return 'working';
   }
 
+  // For other entry types (progress, file-history-snapshot), fall back to index comparison.
+  // During tool execution, a 'progress' entry may follow an assistant tool_use entry,
+  // but the subsequent tool_result (type=user) hasn't arrived yet — treat as 'working'
+  // unless a system entry closed the turn.
   const lastAssistantIndex = findLastIndex(entries, (entry) => isAssistantMessage(entry));
+  const lastSystemIndex = findLastIndex(entries, (entry) => entry.type === 'system');
+
+  // If the last system entry is after the last assistant, the turn is definitely complete.
+  if (lastSystemIndex > lastAssistantIndex && lastAssistantIndex > lastHumanIndex) {
+    return 'idle';
+  }
+
+  // If there's a progress entry between assistant and the next user entry, Claude may be
+  // executing a tool — prefer 'working' unless the system entry confirms idle.
+  if (lastAssistantIndex > lastHumanIndex && lastSystemIndex < lastAssistantIndex) {
+    return 'working';
+  }
+
   return lastAssistantIndex > lastHumanIndex ? 'idle' : 'working';
 }
 
