@@ -20,6 +20,17 @@ export class ClaudeTmuxBackend {
     mode: SessionMode,
     sessionUuid: string
   ): Promise<void> {
+    if (mode === 'docker') {
+      try {
+        await this.execCommand('which', ['clauded'], 5000);
+      } catch {
+        throw new Error(
+          '`clauded` not found. docker mode requires a clauded binary that wraps `docker run ... claude`. ' +
+          'See https://github.com/anthropics/claude-ting for a reference implementation.'
+        );
+      }
+    }
+
     const startupCommand = this.buildStartupCommand(workspacePath, mode, sessionUuid);
 
     await this.execTmux([

@@ -84,9 +84,16 @@ describe('ClaudeTmuxBackend', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await createPromise;
 
-    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock).toHaveBeenCalledTimes(3);
     expect(execFileMock).toHaveBeenNthCalledWith(
       1,
+      'which',
+      ['clauded'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      2,
       'tmux',
       [
         'new-session',
@@ -103,7 +110,7 @@ describe('ClaudeTmuxBackend', () => {
       expect.any(Function)
     );
     expect(execFileMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       'tmux',
       ['send-keys', '-t', 'dev-ahri-mid', 'C-m'],
       expect.any(Object),
