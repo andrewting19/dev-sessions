@@ -162,6 +162,17 @@ describe('ClaudeTmuxBackend', () => {
     warnSpy.mockRestore();
   });
 
+  it('surfaces non-ENOENT transcript polling errors', async () => {
+    const eacces = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    accessMock.mockRejectedValue(eacces);
+
+    const backend = new ClaudeTmuxBackend(500);
+
+    await expect(
+      backend.createSession('dev-orianna-mid', '/tmp/workspace', 'native', 'uuid-eacces')
+    ).rejects.toThrow('EACCES');
+  });
+
   describe('sessionExists tri-state', () => {
     it('returns alive when tmux has-session succeeds', async () => {
       const backend = new ClaudeTmuxBackend();

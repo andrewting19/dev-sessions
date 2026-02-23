@@ -183,7 +183,10 @@ export class ClaudeTmuxBackend {
       try {
         await access(transcriptPath);
         return;
-      } catch {
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
         // File not yet created; keep polling.
       }
 
