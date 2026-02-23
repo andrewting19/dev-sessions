@@ -4,6 +4,7 @@ import {
   CodexAppServerDaemonManager,
   CodexAppServerInfo,
   CodexRpcClient,
+  CodexWebSocketRpcClient,
   CodexTurnWaitResult
 } from '../../src/backends/codex-appserver';
 
@@ -15,12 +16,14 @@ interface RecordedRequest {
 interface FakeClientScript {
   onRequest?: (method: string, params: unknown, requestIndex: number) => unknown | Promise<unknown>;
   waitResult?: CodexTurnWaitResult;
+  waitResults?: CodexTurnWaitResult[];
   currentTurnText?: string;
   connectError?: Error;
 }
 
 class FakeRpcClient implements CodexRpcClient {
   readonly requests: RecordedRequest[] = [];
+  readonly waitCalls: Array<{ timeoutMs: number; expectedThreadId?: string }> = [];
   connectCalls = 0;
   closeCalls = 0;
   currentTurnText = '';
@@ -46,8 +49,11 @@ class FakeRpcClient implements CodexRpcClient {
     return response;
   }
 
-  async waitForTurnCompletion(_timeoutMs: number): Promise<CodexTurnWaitResult> {
+  async waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult> {
+    this.waitCalls.push({ timeoutMs, expectedThreadId });
+    const queued = this.script.waitResults?.shift();
     const result =
+      queued ??
       this.script.waitResult ??
       ({
         completed: true,
@@ -447,6 +453,83 @@ describe('CodexAppServerBackend', () => {
       status: 'completed'
     });
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+    expect(clients[0].waitCalls).toEqual([{ timeoutMs: 5_000, expectedThreadId: 'thr_active' }]);
+  });
+
+  it('waitForThread loops across multiple completed turns until the thread is no longer active', async () => {
+    const { backend, clients } = createHarness([
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 10,
+          status: 'completed',
+          assistantText: 'progress update'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_multi',
+                status: { active: { activeFlags: [] } }
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      },
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 12,
+          status: 'completed',
+          assistantText: 'final answer'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_multi',
+                status: { active: { activeFlags: [] } }
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      },
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_multi',
+                status: 'idle'
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('yasuo-mid', 'thr_multi', 5_000);
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed',
+      assistantText: 'final answer'
+    });
+    expect(clients).toHaveLength(3);
+    expect(clients.map((client) => client.requests.map((entry) => entry.method))).toEqual([
+      ['thread/resume'],
+      ['thread/resume'],
+      ['thread/resume']
+    ]);
+    expect(clients[0].waitCalls).toEqual([{ timeoutMs: 5_000, expectedThreadId: 'thr_multi' }]);
+    expect(clients[1].waitCalls).toEqual([{ timeoutMs: expect.any(Number), expectedThreadId: 'thr_multi' }]);
+    expect(clients[2].waitCalls).toEqual([]);
   });
 
   it('returns immediately when thread/resume shows no active turn', async () => {
@@ -501,6 +584,39 @@ describe('CodexAppServerBackend', () => {
       status: 'completed'
     });
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
+  it('ignores turn/completed notifications for other threads while waiting for a specific thread', async () => {
+    const client = new CodexWebSocketRpcClient('ws://127.0.0.1:65535');
+    let settled = false;
+    const waitPromise = client.waitForTurnCompletion(1_000, 'thr_target').then((result) => {
+      settled = true;
+      return result;
+    });
+
+    (client as unknown as { handleNotification: (n: { method: string; params?: unknown }) => void }).handleNotification({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thr_other',
+        turn: { status: 'completed' }
+      }
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    (client as unknown as { handleNotification: (n: { method: string; params?: unknown }) => void }).handleNotification({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thr_target',
+        turn: { status: 'completed' }
+      }
+    });
+
+    await expect(waitPromise).resolves.toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed'
+    });
   });
 
   it('checks thread/read for specific Codex thread existence', async () => {

@@ -117,12 +117,21 @@ export class CodexBackend implements Backend {
     }
 
     if (!session.codexTurnInProgress) {
-      return {
-        completed: true,
-        timedOut: false,
-        elapsedMs: 0,
-        storeUpdate: baseStoreUpdate
-      };
+      let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
+      try {
+        liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+      } catch {
+        liveStatus = 'unknown';
+      }
+
+      if (liveStatus !== 'active') {
+        return {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 0,
+          storeUpdate: baseStoreUpdate
+        };
+      }
     }
 
     let waitResult: Awaited<ReturnType<CodexAppServerBackend['waitForThread']>>;

@@ -29,6 +29,7 @@ interface PendingRequest {
 interface TurnWaiter {
   startTime: number;
   timeoutHandle: NodeJS.Timeout;
+  expectedThreadId?: string;
   resolve: (result: CodexTurnWaitResult) => void;
 }
 
@@ -86,7 +87,7 @@ export interface CodexRpcClient {
   readonly lastTurnError?: string;
   connectAndInitialize(): Promise<void>;
   request(method: string, params?: unknown): Promise<unknown>;
-  waitForTurnCompletion(timeoutMs: number): Promise<CodexTurnWaitResult>;
+  waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult>;
   close(): Promise<void>;
 }
 
@@ -359,7 +360,7 @@ class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonManager 
   }
 }
 
-class CodexWebSocketRpcClient implements CodexRpcClient {
+export class CodexWebSocketRpcClient implements CodexRpcClient {
   private ws?: WebSocket;
   private connectPromise?: Promise<void>;
   private nextRequestId = 1;
@@ -368,6 +369,7 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
   private currentText = '';
   private turnStatus?: TurnCompletionStatus;
   private turnError?: string;
+  private turnThreadId?: string;
   private closed = false;
   private closing = false;
 
@@ -445,8 +447,10 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
     });
   }
 
-  async waitForTurnCompletion(timeoutMs: number): Promise<CodexTurnWaitResult> {
-    if (this.turnStatus) {
+  async waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult> {
+    const cachedMatchesExpected =
+      !expectedThreadId || (typeof this.turnThreadId === 'string' && this.turnThreadId === expectedThreadId);
+    if (this.turnStatus && cachedMatchesExpected) {
       return {
         completed: true,
         timedOut: false,
@@ -476,6 +480,7 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
       this.waiters.push({
         startTime,
         timeoutHandle,
+        expectedThreadId,
         resolve
       });
     });
@@ -654,8 +659,14 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
       return;
     }
 
+    const notificationThreadId = extractNotificationThreadId(notification.params);
+    if (this.waiters.length > 0 && !this.hasMatchingWaiterForThread(notificationThreadId)) {
+      return;
+    }
+
     this.turnStatus = status;
     this.turnError = extractTurnError(turn);
+    this.turnThreadId = notificationThreadId;
     this.resolveWaiters({
       completed: true,
       timedOut: false,
@@ -663,14 +674,30 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
       status,
       errorMessage: this.turnError,
       assistantText: this.currentText.length > 0 ? this.currentText : undefined
+    }, notificationThreadId);
+  }
+
+  private hasMatchingWaiterForThread(threadId: string | undefined): boolean {
+    return this.waiters.some((waiter) => {
+      if (!waiter.expectedThreadId) {
+        return true;
+      }
+
+      return threadId === waiter.expectedThreadId;
     });
   }
 
-  private resolveWaiters(baseResult: CodexTurnWaitResult): void {
-    const waiters = this.waiters.splice(0, this.waiters.length);
+  private resolveWaiters(baseResult: CodexTurnWaitResult, completedThreadId?: string, forceAll: boolean = false): void {
+    const waiters = this.waiters;
+    this.waiters = [];
     const now = Date.now();
 
     for (const waiter of waiters) {
+      if (!forceAll && waiter.expectedThreadId && completedThreadId !== waiter.expectedThreadId) {
+        this.waiters.push(waiter);
+        continue;
+      }
+
       clearTimeout(waiter.timeoutHandle);
       waiter.resolve({
         ...baseResult,
@@ -702,7 +729,7 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
       elapsedMs: 0,
       status: this.turnStatus,
       errorMessage: this.turnError
-    });
+    }, undefined, true);
   }
 
   private notify(method: string, params?: unknown): void {
@@ -838,6 +865,16 @@ function extractDeltaText(params: unknown): string {
   return typeof delta === 'string' ? delta : '';
 }
 
+function extractNotificationThreadId(params: unknown): string | undefined {
+  if (!params || typeof params !== 'object') {
+    return undefined;
+  }
+
+  const rec = params as Record<string, unknown>;
+  const threadId = rec.threadId ?? rec.thread_id;
+  return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined;
+}
+
 function extractTurnStatus(turn: unknown): TurnCompletionStatus | undefined {
   if (!turn || typeof turn !== 'object') {
     return undefined;
@@ -965,7 +1002,7 @@ export class CodexAppServerBackend {
       // Captures fast responses (e.g. short answers) without blocking for long tasks.
       // Only use the result if the turn actually completed — not if it timed out.
       const FAST_CAPTURE_TIMEOUT_MS = 3_000;
-      const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS);
+      const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS, tid);
       const completedEarly = !earlyResult.timedOut && earlyResult.status === 'completed';
       return { tid, assistantText: completedEarly ? earlyResult.assistantText : undefined };
     });
@@ -1006,29 +1043,88 @@ export class CodexAppServerBackend {
     const state = this.ensureSessionState(championId);
     const safeTimeoutMs = Math.max(1, timeoutMs);
 
-    const { result } = await this.withConnectedClient(async (client) => {
-      const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
-      const runtimeStatus = extractThreadRuntimeStatus(resumeResult);
+    const overallStart = Date.now();
+    let lastAssistantText: string | undefined;
+    let sawActiveTurn = false;
+    let result: CodexTurnWaitResult | undefined;
 
-      if (runtimeStatus === 'active') {
-        return client.waitForTurnCompletion(safeTimeoutMs);
-      }
-
-      if (runtimeStatus === 'systemError' || runtimeStatus === 'unknown') {
-        return {
-          completed: true,
-          timedOut: false,
-          elapsedMs: 0,
-          status: 'failed' as const,
-          errorMessage:
-            runtimeStatus === 'systemError'
-              ? 'Codex thread is in systemError state'
-              : 'Unable to determine Codex thread runtime status'
+    while (!result) {
+      const elapsedMs = Date.now() - overallStart;
+      const remainingMs = safeTimeoutMs - elapsedMs;
+      if (remainingMs <= 0) {
+        result = {
+          completed: false,
+          timedOut: true,
+          elapsedMs: Math.max(1, elapsedMs),
+          status: 'interrupted',
+          errorMessage: 'Timed out waiting for Codex turn completion',
+          assistantText: lastAssistantText
         };
+        break;
       }
 
-      return { completed: true, timedOut: false, elapsedMs: 0, status: 'completed' as const };
-    });
+      const cycle = await this.withConnectedClient(async (client) => {
+        const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
+        const runtimeStatus = extractThreadRuntimeStatus(resumeResult);
+
+        if (runtimeStatus === 'active') {
+          const waitResult = await client.waitForTurnCompletion(remainingMs, normalizedThreadId);
+          return { kind: 'wait' as const, waitResult };
+        }
+
+        if (runtimeStatus === 'systemError' || runtimeStatus === 'unknown') {
+          return {
+            kind: 'terminal' as const,
+            waitResult: {
+              completed: true,
+              timedOut: false,
+              elapsedMs: 0,
+              status: 'failed' as const,
+              errorMessage:
+                runtimeStatus === 'systemError'
+                  ? 'Codex thread is in systemError state'
+                  : 'Unable to determine Codex thread runtime status'
+            }
+          };
+        }
+
+        return {
+          kind: 'idle' as const,
+          waitResult: { completed: true, timedOut: false, elapsedMs: 0, status: 'completed' as const }
+        };
+      });
+
+      if (cycle.result.kind === 'wait') {
+        sawActiveTurn = true;
+        if (cycle.result.waitResult.assistantText) {
+          lastAssistantText = cycle.result.waitResult.assistantText;
+        }
+
+        if (
+          cycle.result.waitResult.timedOut ||
+          cycle.result.waitResult.status === 'failed' ||
+          cycle.result.waitResult.status === 'interrupted'
+        ) {
+          result = {
+            ...cycle.result.waitResult,
+            elapsedMs: Math.max(cycle.result.waitResult.elapsedMs, Date.now() - overallStart),
+            assistantText: cycle.result.waitResult.assistantText ?? lastAssistantText
+          };
+          break;
+        }
+
+        // One turn completed, but the logical task may continue in a subsequent turn.
+        // Reconnect and re-check thread runtime state until the thread is quiescent.
+        continue;
+      }
+
+      const totalElapsedMs = Date.now() - overallStart;
+      result = {
+        ...cycle.result.waitResult,
+        elapsedMs: sawActiveTurn ? Math.max(1, totalElapsedMs) : 0,
+        assistantText: lastAssistantText
+      };
+    }
 
     state.lastTurnStatus = result.status;
     state.lastTurnError = result.errorMessage;

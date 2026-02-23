@@ -48,6 +48,7 @@
 - [x] Stale `lastTurnStatus: 'failed'` in store now reconciled against live thread before throwing
 - [x] Fast-capture only returns `assistantText` when the early wait actually completes (not on timeout/partial deltas)
 - [x] P0 fixes: timeout no longer poisons store with `interrupted`; `status()` always does live check against app-server; non-Error throws always trigger send cleanup
+- [x] Codex `wait` now waits through multi-turn progress updates (loops until thread quiescence), scopes `turn/completed` to the target thread, and live-rechecks status when store state is stale
 - [x] Remove `yolo` mode — `native` is now always permissive (`--dangerously-skip-permissions`)
 
 ### Phase 4: Skills & Install ✅

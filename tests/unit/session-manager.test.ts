@@ -462,6 +462,46 @@ describe('SessionManager', () => {
     expect(stored?.lastTurnError).toBeUndefined();
   });
 
+  it('rechecks live Codex thread status on wait when the store says no turn is in progress', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-live-recheck'
+    });
+
+    await store.updateSession(session.championId, {
+      codexTurnInProgress: false,
+      lastTurnStatus: 'completed'
+    });
+    codexBackend.statuses.set(session.championId, 'working');
+    codexBackend.nextWaitForThreadResult = {
+      completed: true,
+      timedOut: false,
+      elapsedMs: 77,
+      status: 'completed'
+    };
+
+    const result = await manager.waitForSession(session.championId, {
+      timeoutSeconds: 3
+    });
+
+    expect(result).toEqual({
+      completed: true,
+      timedOut: false,
+      elapsedMs: 77
+    });
+    expect(codexBackend.waitForThreadCalls).toEqual([
+      {
+        championId: session.championId,
+        threadId: session.internalId,
+        timeoutMs: 3_000
+      }
+    ]);
+
+    const stored = await store.getSession(session.championId);
+    expect(stored?.codexTurnInProgress).toBe(false);
+    expect(stored?.lastTurnStatus).toBe('completed');
+  });
+
   it('throws when codex backend.sendMessage throws (connection error)', async () => {
     const session = await manager.createSession({
       cli: 'codex',
