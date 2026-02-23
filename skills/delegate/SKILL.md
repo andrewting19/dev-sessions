@@ -64,7 +64,7 @@ dev-sessions wait "$s1" && dev-sessions last-message "$s1"
 dev-sessions wait "$s2" && dev-sessions last-message "$s2"
 ```
 
-Keep them independent — agents that see each other's output anchor to it. Synthesize yourself. Both Claude and Codex are strong; Codex tends to be more direct on implementation, Claude tends to reason more carefully about tradeoffs.
+Keep them independent — agents that see each other's output anchor to it. Synthesize yourself. Claude is faster and more general-purpose; Codex excels at deep, complex implementation tasks and follows detailed instructions exceptionally well.
 
 For smaller decisions: explore quickly yourself, or just delegate with a clear brief if you already understand the problem.
 
