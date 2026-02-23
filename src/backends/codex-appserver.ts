@@ -724,11 +724,12 @@ function extractThreadId(result: unknown): string {
   return threadId;
 }
 
-// ThreadStatus JSON shape (Codex tagged enum serialized by serde):
-//   "idle" | "notLoaded" | "systemError"  — plain strings
-//   { "active": { "activeFlags": [...] } } — object for the active variant
-// Do NOT look for a ".type" field — that is the wrong shape.
-// Older Codex versions omit the status field entirely — treat as idle.
+// Codex 0.104.0 shipped before ThreadStatus was added to the protocol and omits
+// thread.status entirely for idle threads, so missing status must be treated as
+// idle. Starting with the post-0.104.0 protocol (expected in 0.105.0 stable),
+// ThreadStatus is a tagged serde enum and will appear as objects such as
+// {"type":"idle"} / {"type":"active","activeFlags":[...]}. When 0.105.0 is
+// supported here, update this parser to handle both shapes.
 function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown' {
   const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
   if (!thread || !('status' in thread)) {
