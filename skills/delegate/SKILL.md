@@ -9,6 +9,14 @@ For mechanics, see the `dev-sessions` skill. This is about *how to think* as an 
 
 ---
 
+## Before you delegate: get clear yourself
+
+The orchestrator's own clarity is the bottleneck. If you delegate before you've thought clearly about what you actually want, no prompting principle saves you. Before writing a brief, ask: do I understand the problem well enough to recognize a good solution when I see one? If not, think it through first — or use a sub-agent to explore, not to implement.
+
+This skill was itself written this way: rather than handing over a spec, the underlying mental model was communicated and refined until there was shared understanding, then execution was trusted. The result is better than any prescriptive brief would have produced.
+
+---
+
 ## The mental model
 
 Your job as orchestrator is **judgment and synthesis** — holding the big picture, making decisions, staying at the right altitude. Sub-agents are your specialists: highly intelligent, capable of going deep on a focused problem. Your constraint is context window. Theirs is scope.
