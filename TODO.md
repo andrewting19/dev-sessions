@@ -79,6 +79,8 @@
 - [ ] **Codex ignores `--mode` flag** — `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of mode. Low priority since we always use yolo.
 - [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-yolo modes.
 - [ ] **Claude permission prompts undetectable** — TUI elements, not in JSONL transcript. `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
+- [ ] **Codex `last-message` returns empty** — delta text from `client.currentTurnText` is discarded when the WebSocket closes; `thread/read` fallback doesn't reliably return `agentMessage` items. Fix: include `currentTurnText` in `CodexTurnWaitResult` and persist to store after `wait`.
+- [ ] **Gateway `last-message` block splitting** — `cli.ts` joins blocks with blank lines; `gateway/server.ts` splits on blank lines — assistant messages with paragraph breaks get corrupted. Fix: use structured JSON over the gateway.
 
 ---
 

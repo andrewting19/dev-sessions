@@ -742,19 +742,22 @@ function extractThreadId(result: unknown): string {
   return threadId;
 }
 
-// ThreadStatus uses #[serde(tag = "type", rename_all = "camelCase")]:
-//   { "type": "idle" } | { "type": "notLoaded" } | { "type": "systemError" } | { "type": "active", "activeFlags": [...] }
-// Older Codex versions omit the status field entirely — treat absent status as idle.
+// ThreadStatus JSON shape (Codex tagged enum serialized by serde):
+//   "idle" | "notLoaded" | "systemError"  — plain strings
+//   { "active": { "activeFlags": [...] } } — object for the active variant
+// Do NOT look for a ".type" field — that is the wrong shape.
+// Older Codex versions omit the status field entirely — treat as idle.
 function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown' {
   const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
   if (!thread || !('status' in thread)) {
-    // Old Codex version without Thread.status field — assume idle
     return 'idle';
   }
-  const status = thread.status as { type?: unknown } | undefined;
-  const type = status?.type;
-  if (type === 'active' || type === 'idle' || type === 'systemError' || type === 'notLoaded') {
-    return type;
+  const status = thread.status;
+  if (status === 'idle' || status === 'notLoaded' || status === 'systemError') {
+    return status;
+  }
+  if (status !== null && typeof status === 'object' && 'active' in status) {
+    return 'active';
   }
   return 'unknown';
 }
@@ -1221,14 +1224,12 @@ export class CodexAppServerBackend {
       return this.daemonManager.isServerRunning(pid, port);
     }
 
-    try {
-      const { result } = await this.withConnectedClient(async (client) => {
-        return this.threadExistsOnServer(client, threadId.trim());
-      });
-      return result;
-    } catch {
-      return false;
-    }
+    // Let transport errors propagate — callers that need tri-state liveness
+    // should catch and treat as 'unknown' rather than 'dead'.
+    const { result } = await this.withConnectedClient(async (client) => {
+      return this.threadExistsOnServer(client, threadId.trim());
+    });
+    return result;
   }
 
   private async threadExistsOnServer(client: CodexRpcClient, threadId: string): Promise<boolean> {

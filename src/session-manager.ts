@@ -235,9 +235,13 @@ export class SessionManager {
         continue;
       }
 
-      const taken = await Promise.any(
-        allBackends.map((b) => b.isChampionIdTaken(candidate).then((t) => t ? Promise.resolve(true) : Promise.reject(false)))
-      ).catch(() => false);
+      let taken = false;
+      for (const b of allBackends) {
+        if (await b.isChampionIdTaken(candidate)) {
+          taken = true;
+          break;
+        }
+      }
 
       if (taken) {
         continue;

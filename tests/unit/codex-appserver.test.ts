@@ -358,7 +358,7 @@ describe('CodexAppServerBackend', () => {
         },
         onRequest: (method) => {
           if (method === 'thread/resume') {
-            return { thread: { id: 'thr_failed', status: { type: 'active', activeFlags: [] } } };
+            return { thread: { id: 'thr_failed', status: { active: { activeFlags: [] } } } };
           }
           throw new Error(`Unexpected method: ${method}`);
         }
@@ -393,10 +393,7 @@ describe('CodexAppServerBackend', () => {
             return {
               thread: {
                 id: 'thr_active',
-                status: {
-                  type: 'active',
-                  activeFlags: []
-                }
+                status: { active: { activeFlags: [] } }
               }
             };
           }
@@ -424,9 +421,7 @@ describe('CodexAppServerBackend', () => {
             return {
               thread: {
                 id: 'thr_idle',
-                status: {
-                  type: 'idle'
-                }
+                status: 'idle'
               }
             };
           }

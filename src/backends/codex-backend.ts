@@ -192,13 +192,17 @@ export class CodexBackend implements Backend {
   }
 
   async exists(session: StoredSession): Promise<'alive' | 'dead' | 'unknown'> {
-    const alive = await this.raw.sessionExists(
-      session.championId,
-      session.appServerPid,
-      session.appServerPort,
-      session.internalId
-    );
-    return alive ? 'alive' : 'dead';
+    try {
+      const alive = await this.raw.sessionExists(
+        session.championId,
+        session.appServerPid,
+        session.appServerPort,
+        session.internalId
+      );
+      return alive ? 'alive' : 'dead';
+    } catch {
+      return 'unknown';
+    }
   }
 
   async getLogs(session: StoredSession): Promise<SessionTurn[]> {

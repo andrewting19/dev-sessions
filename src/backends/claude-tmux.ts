@@ -80,28 +80,8 @@ export class ClaudeTmuxBackend {
     await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
   }
 
-  async submitInput(tmuxSessionName: string): Promise<void> {
-    if (!(await this.isClaudeRunning(tmuxSessionName))) {
-      throw new Error('Claude is not running in this tmux session - refusing to submit input');
-    }
-
-    await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
-  }
-
   async killSession(tmuxSessionName: string): Promise<void> {
     await this.execTmux(['kill-session', '-t', tmuxSessionName]);
-  }
-
-  async listSessions(): Promise<string[]> {
-    try {
-      const output = await this.execTmux(['list-sessions', '-F', '#{session_name}']);
-      return output
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-    } catch {
-      return [];
-    }
   }
 
   async sessionExists(tmuxSessionName: string): Promise<'alive' | 'dead' | 'unknown'> {
