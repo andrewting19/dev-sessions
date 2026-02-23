@@ -1025,9 +1025,11 @@ export class CodexAppServerBackend {
 
       // Best-effort: wait a short time for the turn to complete on this connection.
       // Captures fast responses (e.g. short answers) without blocking for long tasks.
+      // Only use the result if the turn actually completed — not if it timed out.
       const FAST_CAPTURE_TIMEOUT_MS = 3_000;
       const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS);
-      return { tid, assistantText: earlyResult.assistantText };
+      const completedEarly = !earlyResult.timedOut && earlyResult.status === 'completed';
+      return { tid, assistantText: completedEarly ? earlyResult.assistantText : undefined };
     });
 
     const state = this.ensureSessionState(championId);

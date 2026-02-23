@@ -46,6 +46,7 @@
 - [x] Overlap guard — rejects `send` if `codexTurnInProgress` is already true, with clear error
 - [x] `extractThreadRuntimeStatus` fixed — correctly parses Codex `ThreadStatus` enum JSON shape
 - [x] Stale `lastTurnStatus: 'failed'` in store now reconciled against live thread before throwing
+- [x] Fast-capture only returns `assistantText` when the early wait actually completes (not on timeout/partial deltas)
 
 ### Phase 4: Skills & Install ✅
 - [x] `skills/` directory — multi-skill bundle (dev-sessions + handoff)

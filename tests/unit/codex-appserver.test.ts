@@ -335,6 +335,42 @@ describe('CodexAppServerBackend', () => {
     ]);
   });
 
+  it('does not return fast-captured assistantText when the early wait times out', async () => {
+    const { backend, clients } = createHarness([
+      {
+        waitResult: {
+          completed: false,
+          timedOut: true,
+          elapsedMs: 3_000,
+          status: 'interrupted',
+          errorMessage: 'Timed out waiting for Codex turn completion',
+          assistantText: 'partial streamed output'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return { thread: { id: 'thr_slow' } };
+          }
+          if (method === 'turn/start') {
+            return {};
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const sendResult = await backend.sendMessage('vex-mid', '', 'Write a long answer', {
+      workspacePath: '/tmp/repo'
+    });
+
+    expect(sendResult).toEqual({
+      threadId: 'thr_slow',
+      appServerPid: 9001,
+      appServerPort: 4510
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start', 'turn/start']);
+    expect(backend.getSessionStatus('vex-mid')).toBe('idle');
+  });
+
   it('send returns fire-and-forget result; waitForThread surfaces failed turn', async () => {
     const { backend, clients } = createHarness([
       {
