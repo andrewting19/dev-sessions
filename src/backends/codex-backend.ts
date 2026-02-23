@@ -64,34 +64,21 @@ export class CodexBackend implements Backend {
   }
 
   async status(session: StoredSession): Promise<BackendStatusResult> {
-    if (session.codexTurnInProgress) {
-      return { status: 'working' };
+    const liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+
+    if (liveStatus === 'active') {
+      return { status: 'working', storeUpdate: { codexTurnInProgress: true } };
     }
 
-    if (session.lastTurnStatus === 'failed') {
-      let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
-      try {
-        liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
-      } catch {
-        liveStatus = 'unknown';
-      }
-
-      if (liveStatus === 'active') {
-        return { status: 'working' };
-      }
-
-      if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
-        return {
-          status: 'idle',
-          storeUpdate: { lastTurnStatus: 'completed', lastTurnError: undefined }
-        };
-      }
-
-      const suffix = session.lastTurnError ? `: ${session.lastTurnError}` : '';
-      return { status: 'idle', errorToThrow: new Error(`Codex turn failed${suffix}`) };
+    if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
+      return { status: 'idle', storeUpdate: { codexTurnInProgress: false } };
     }
 
-    return { status: 'idle' };
+    if (liveStatus === 'systemError') {
+      return { errorToThrow: new Error('Codex app-server is in a system error state'), status: 'idle' };
+    }
+
+    return { errorToThrow: new Error('Could not reach Codex app-server'), status: 'idle' };
   }
 
   async wait(session: StoredSession, timeoutMs: number, _intervalMs: number): Promise<BackendWaitResult> {
@@ -130,15 +117,6 @@ export class CodexBackend implements Backend {
     }
 
     if (!session.codexTurnInProgress) {
-      if (session.lastTurnStatus === 'interrupted') {
-        return {
-          completed: false,
-          timedOut: true,
-          elapsedMs: timeoutMs,
-          storeUpdate: baseStoreUpdate
-        };
-      }
-
       return {
         completed: true,
         timedOut: false,
@@ -176,8 +154,9 @@ export class CodexBackend implements Backend {
       lastUsed: completionTime,
       codexTurnInProgress: turnStillInProgress,
       codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
-      lastTurnStatus: waitResult.status,
-      lastTurnError: waitResult.errorMessage,
+      // Don't write lastTurnStatus/lastTurnError on timeout — server is source of truth.
+      // Only update turn outcome when the server actually told us something.
+      ...(waitResult.timedOut ? {} : { lastTurnStatus: waitResult.status, lastTurnError: waitResult.errorMessage }),
       lastAssistantMessages: updatedMessages
     };
 

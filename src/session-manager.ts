@@ -94,11 +94,10 @@ export class SessionManager {
     try {
       postSendFields = await backend.send(session, message);
     } catch (error: unknown) {
-      if (error instanceof Error) {
-        const errorFields = backend.onSendError(session, error);
-        if (Object.keys(errorFields).length > 0) {
-          await this.store.updateSession(championId, errorFields);
-        }
+      const err = error instanceof Error ? error : new Error(String(error));
+      const errorFields = backend.onSendError(session, err);
+      if (Object.keys(errorFields).length > 0) {
+        await this.store.updateSession(championId, errorFields);
       }
       throw error;
     }

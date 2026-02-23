@@ -47,6 +47,8 @@
 - [x] `extractThreadRuntimeStatus` fixed — correctly parses Codex `ThreadStatus` enum JSON shape
 - [x] Stale `lastTurnStatus: 'failed'` in store now reconciled against live thread before throwing
 - [x] Fast-capture only returns `assistantText` when the early wait actually completes (not on timeout/partial deltas)
+- [x] P0 fixes: timeout no longer poisons store with `interrupted`; `status()` always does live check against app-server; non-Error throws always trigger send cleanup
+- [x] Remove `yolo` mode — `native` is now always permissive (`--dangerously-skip-permissions`)
 
 ### Phase 4: Skills & Install ✅
 - [x] `skills/` directory — multi-skill bundle (dev-sessions + handoff)
@@ -97,10 +99,9 @@
 
 ### Medium Priority
 
-#### Session store locking (#2/#3)
-**Why:** Concurrent CLI invocations do read-modify-write on `~/.dev-sessions/sessions.json` with no locking. Two parallel `create` calls can both pick the same champion ID, and concurrent writes can lose updates. The fixed temp filename (`sessions.json.tmp`) also creates write collisions.
-**What:** Add cross-process file locking (e.g. `proper-lockfile` or a custom lockfile approach), use unique temp filenames for atomic writes, add retry logic.
-**Alternative:** Migrate store to SQLite — solves locking, atomicity, and query performance in one go.
+#### Session store locking (#2/#3) — HIGH PRIORITY
+**Why:** Concurrent CLI invocations do read-modify-write on `~/.dev-sessions/sessions.json` with no locking. Parallel `kill` calls in a loop have been observed wiping unrelated sessions from the store (confirmed in practice). Two parallel `create` calls can also pick the same champion ID.
+**What:** Migrate store to SQLite — solves locking, atomicity, and query performance in one go. File locking (e.g. `proper-lockfile`) is a lower-effort alternative but doesn't fix all races.
 **Files:** `src/session-store.ts`
 
 #### Orphaned resources on store failure (#8)
