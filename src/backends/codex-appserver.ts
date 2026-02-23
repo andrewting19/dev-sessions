@@ -114,6 +114,7 @@ const CLOSE_TIMEOUT_MS = 500;
 const STATE_FILE_VERSION = 1;
 const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not found/i;
 const THREAD_READ_UNMATERIALIZED_PATTERN = /includeTurns is unavailable before first user message/i;
+const THREAD_READ_NOT_FOUND_PATTERN = /thread not loaded|thread not found|no rollout found|unknown thread/i;
 const APP_SERVER_URL_PATTERN = /ws:\/\/127\.0\.0\.1:(\d+)/i;
 
 function defaultSpawnCodexDaemon(args: string[], options: Parameters<typeof spawn>[2]): ChildProcess {
@@ -743,22 +744,6 @@ function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLo
   return 'unknown';
 }
 
-function extractThreadListPage(result: unknown): { threadIds: string[]; nextCursor?: string } {
-  if (!result || typeof result !== 'object') {
-    throw new Error('thread/list returned an invalid response');
-  }
-  const record = result as Record<string, unknown>;
-  if (!Array.isArray(record.data)) {
-    throw new Error('thread/list response is missing result.data');
-  }
-  const threadIds = (record.data as unknown[])
-    .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).id : undefined))
-    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-  const nextCursor =
-    typeof record.nextCursor === 'string' && record.nextCursor.length > 0 ? record.nextCursor : undefined;
-  return { threadIds, nextCursor };
-}
-
 function extractThreadReadAssistantMessages(result: unknown): string[] {
   if (!result || typeof result !== 'object') {
     throw new Error('thread/read returned an invalid response');
@@ -1203,25 +1188,17 @@ export class CodexAppServerBackend {
   }
 
   private async threadExistsOnServer(client: CodexRpcClient, threadId: string): Promise<boolean> {
-    let cursor: string | undefined;
-    const pageLimit = 100;
-
-    while (true) {
-      const listResult = await client.request('thread/list', {
-        cursor,
-        limit: pageLimit,
-        modelProviders: []
+    try {
+      await client.request('thread/read', {
+        threadId,
+        includeTurns: false
       });
-      const page = extractThreadListPage(listResult);
-      if (page.threadIds.includes(threadId)) {
-        return true;
-      }
-
-      if (!page.nextCursor) {
+      return true;
+    } catch (error: unknown) {
+      if (this.isThreadReadNotFoundError(error)) {
         return false;
       }
-
-      cursor = page.nextCursor;
+      throw error;
     }
   }
 
@@ -1302,5 +1279,13 @@ export class CodexAppServerBackend {
     }
 
     return THREAD_READ_UNMATERIALIZED_PATTERN.test(error.message);
+  }
+
+  private isThreadReadNotFoundError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    return THREAD_READ_NOT_FOUND_PATTERN.test(error.message);
   }
 }

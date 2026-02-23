@@ -503,29 +503,30 @@ describe('CodexAppServerBackend', () => {
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
   });
 
-  it('checks thread/list for specific Codex thread existence', async () => {
-    const threadListScript = {
+  it('checks thread/read for specific Codex thread existence', async () => {
+    const threadReadScript = {
       onRequest: (method: string, params: unknown) => {
-        if (method !== 'thread/list') {
+        if (method !== 'thread/read') {
           throw new Error(`Unexpected method: ${method}`);
         }
 
-        const cursor = (params as { cursor?: string } | undefined)?.cursor;
-        if (!cursor) {
+        const request = params as { threadId?: string; includeTurns?: boolean } | undefined;
+        expect(request?.includeTurns).toBe(false);
+
+        if (request?.threadId === 'thr_target') {
           return {
-            data: [{ id: 'thr_other' }],
-            nextCursor: 'page-2'
+            thread: {
+              id: 'thr_target',
+              turns: []
+            }
           };
         }
 
-        return {
-          data: [{ id: 'thr_target' }],
-          nextCursor: null
-        };
+        throw new Error(`thread/read failed: thread not loaded: ${request?.threadId}`);
       }
     } satisfies FakeClientScript;
 
-    const { backend, daemon, clients } = createHarness([threadListScript, threadListScript]);
+    const { backend, daemon, clients } = createHarness([threadReadScript, threadReadScript]);
 
     await expect(
       backend.sessionExists('fizz-top', daemon.server.pid, daemon.server.port, 'thr_target')
@@ -535,8 +536,8 @@ describe('CodexAppServerBackend', () => {
     ).resolves.toBe(false);
 
     expect(clients).toHaveLength(2);
-    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/list', 'thread/list']);
-    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/list', 'thread/list']);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/read']);
+    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/read']);
   });
 
   it('archives threads on kill and delegates shared daemon lifecycle checks', async () => {
