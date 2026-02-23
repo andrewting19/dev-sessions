@@ -116,6 +116,34 @@
 **What:** Add a startup lockfile before spawning. Use unique temp state files. Kill the spawned child on startup failure before throwing.
 **Files:** `src/backends/codex-appserver.ts` (daemon startup path)
 
+#### Codex status truthfulness via app-server notification monitor (new)
+**Why:** On codex-cli `0.104.0`, `thread/resume` and even `thread/read` can report an idle/completed thread while the agent is still executing tools in the same turn. We now mitigate `wait` and `status` by persisting `codexActiveTurnId`, but `status` remains conservative and can stay `working` after out-of-band completion until `wait` or another completion path clears the latch.
+**What:** Build a long-lived local monitor (daemon task or companion process) that subscribes to Codex app-server notifications and updates the session store from `turn/started` / `turn/completed` events for tracked threads. Use the existing app-server as source of truth; the monitor just persists a projection into `~/.dev-sessions/sessions.json` (or future SQLite store).
+**Protocol signals to use (0.104.0):**
+- `turn/started` → persist `codexTurnInProgress=true`, `codexActiveTurnId=<turn.id>`
+- `turn/completed` (matching thread + turn) → persist `codexTurnInProgress=false`, clear `codexActiveTurnId`, persist `lastTurnStatus`/`lastTurnError`, update `codexLastCompletedAt`
+- `item/agentMessage/delta` (optional) → capture streamed text for better `last-message` freshness if desired
+**Non-goals for v1 monitor:**
+- Do not infer completion from `thread/resume` or `thread/read`
+- Do not try to reconstruct missed notifications after the monitor was offline (best-effort only)
+**Suggested design:**
+- Single monitor connection per app-server (not per session)
+- Subscribe by `thread/resume` for active tracked threads; maintain mapping `threadId -> championId`
+- Reconcile tracked threads periodically from store (or via `create`/`send` hooks) so newly created sessions get subscribed
+- Gracefully handle daemon restarts / websocket reconnects; resubscribe all tracked threads on reconnect
+- Keep updates idempotent (ignore duplicate notifications)
+**Success criteria (verifiable):**
+1. Reproduce the timed-command false-idle bug on Codex `0.104.0` and confirm `dev-sessions status <id>` stays `working` during the 8s command even when `thread/resume` reports idle.
+2. After the final `turn/completed`, `dev-sessions status <id>` flips to `idle` without requiring `dev-sessions wait`.
+3. Out-of-band completion (agent finishes while no `wait` is running) clears `codexActiveTurnId` automatically.
+4. Monitor survives app-server restart: after reconnect + resubscribe, new turns update status correctly.
+5. Duplicate `turn/completed` notifications (or reconnect replay artifacts if any) do not corrupt store state.
+**Files (likely):**
+- `src/backends/codex-appserver.ts` (notification client reuse / subscription helpers)
+- `src/session-manager.ts` or new monitor module (lifecycle wiring)
+- `src/session-store.ts` (event-driven updates; later SQLite integration)
+- `tests/integration/` (real Codex repro asserting status transitions without `wait`)
+
 ### Architecture
 
 #### ~~Backend adapter interface (#13)~~ ✅

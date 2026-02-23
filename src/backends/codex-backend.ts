@@ -70,12 +70,18 @@ export class CodexBackend implements Backend {
 
   async status(session: StoredSession): Promise<BackendStatusResult> {
     const liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+    const hasPendingTurnId = typeof session.codexActiveTurnId === 'string' && session.codexActiveTurnId.length > 0;
 
     if (liveStatus === 'active') {
       return { status: 'working', storeUpdate: { codexTurnInProgress: true } };
     }
 
     if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
+      if (hasPendingTurnId) {
+        // Codex 0.104.0 may report idle while the tracked turn is still executing tools.
+        // Keep status conservative until an exact turn/completed notification clears the latch.
+        return { status: 'working', storeUpdate: { codexTurnInProgress: true } };
+      }
       return { status: 'idle', storeUpdate: { codexTurnInProgress: false } };
     }
 

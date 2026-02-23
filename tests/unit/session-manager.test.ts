@@ -545,6 +545,26 @@ describe('SessionManager', () => {
     expect(stored?.lastTurnStatus).toBe('completed');
   });
 
+  it('reports codex status as working when a tracked active turn id exists even if live thread status polls idle', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-status-latch'
+    });
+
+    await store.updateSession(session.championId, {
+      codexTurnInProgress: false,
+      codexActiveTurnId: 'turn_false_idle',
+      lastTurnStatus: undefined
+    });
+    codexBackend.statuses.set(session.championId, 'idle');
+
+    await expect(manager.getSessionStatus(session.championId)).resolves.toBe('working');
+
+    const stored = await store.getSession(session.championId);
+    expect(stored?.codexTurnInProgress).toBe(true);
+    expect(stored?.codexActiveTurnId).toBe('turn_false_idle');
+  });
+
   it('throws when codex backend.sendMessage throws (connection error)', async () => {
     const session = await manager.createSession({
       cli: 'codex',
