@@ -4,13 +4,14 @@ import { toTmuxSessionName } from '../champion-ids';
 import {
   countAssistantMessages,
   countSystemEntries,
+  extractTextBlocks,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
   hasAssistantResponseAfterLatestUser,
   inferTranscriptStatus,
   readClaudeTranscript
 } from '../transcript/claude-parser';
-import { AgentTurnStatus, SessionCli, StoredSession } from '../types';
+import { AgentTurnStatus, SessionCli, SessionTurn, StoredSession } from '../types';
 import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
 import { ClaudeTmuxBackend } from './claude-tmux';
 
@@ -139,6 +140,29 @@ export class ClaudeBackend implements Backend {
     const transcriptEntries = await readClaudeTranscript(transcriptPath);
     const blocks = getAssistantTextBlocks(transcriptEntries);
     return blocks.slice(-Math.max(1, count));
+  }
+
+  async getLogs(session: StoredSession): Promise<SessionTurn[]> {
+    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
+    const entries = await readClaudeTranscript(transcriptPath);
+    const turns: SessionTurn[] = [];
+
+    for (const entry of entries) {
+      const type = entry.type?.toLowerCase();
+      if (type === 'human' || type === 'user') {
+        const text = extractTextBlocks(entry.message?.content).join('\n\n');
+        if (text) {
+          turns.push({ role: 'human', text });
+        }
+      } else if (type === 'assistant') {
+        const text = extractTextBlocks(entry.message?.content).join('\n\n');
+        if (text) {
+          turns.push({ role: 'assistant', text });
+        }
+      }
+    }
+
+    return turns;
   }
 
   async kill(session: StoredSession): Promise<void> {

@@ -67,7 +67,7 @@
 - [x] claude-ting docs updated with host setup instructions (gateway install, install-skill)
 
 ### Testing ✅
-- [x] 120 automated tests (unit + integration) across 17 test files
+- [x] 126 automated tests (unit + integration) across 17 test files
 - [x] Real E2E verified: Claude Code send→wait→last-message
 - [x] Real E2E verified: Codex send→wait→last-message (PONG test)
 - [x] Real E2E verified: Docker gateway relay
@@ -119,7 +119,8 @@
 - [ ] `send --file` with template variables (inject session context)
 - [ ] `wait` with multiple session IDs (wait for all/any)
 - [ ] Auto-cleanup: kill sessions older than N hours
-- [ ] `logs` command — full transcript dump with formatting
+- [x] `logs` command — full transcript dump with role labels (Claude: JSONL parse; Codex: thread/read)
+- [x] `inspect` command — dump raw stored session record as JSON
 - [ ] Better error messages throughout (session not found, tmux not installed, codex not installed)
 - [ ] Version strings — source from `package.json` in one place (currently duplicated in cli.ts and codex clientInfo)
 

@@ -33,3 +33,8 @@ export interface WaitResult {
   timedOut: boolean;
   elapsedMs: number;
 }
+
+export interface SessionTurn {
+  role: 'human' | 'assistant';
+  text: string;
+}

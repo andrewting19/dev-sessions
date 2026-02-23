@@ -1,4 +1,4 @@
-import { AgentTurnStatus, SessionCli, SessionMode, StoredSession, WaitResult } from '../types';
+import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from '../types';
 
 export interface BackendCreateOptions {
   championId: string;
@@ -41,6 +41,7 @@ export interface Backend {
   wait(session: StoredSession, timeoutMs: number, intervalMs: number): Promise<BackendWaitResult>;
   exists(session: StoredSession): Promise<'alive' | 'dead' | 'unknown'>;
   getLastMessages(session: StoredSession, count: number): Promise<string[]>;
+  getLogs(session: StoredSession): Promise<SessionTurn[]>;
   kill(session: StoredSession): Promise<void>;
   afterKill(remainingActiveSessions: StoredSession[]): Promise<void>;
 }

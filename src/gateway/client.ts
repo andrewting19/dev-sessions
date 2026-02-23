@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { AgentTurnStatus, SessionCli, SessionMode, StoredSession, WaitResult } from '../types';
+import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from '../types';
 
 const DEFAULT_GATEWAY_BASE_URL = 'http://host.docker.internal:6767';
 
@@ -149,6 +149,30 @@ export class GatewaySessionManager {
     }
 
     return response.status;
+  }
+
+  async getSessionLogs(championId: string): Promise<SessionTurn[]> {
+    const query = new URLSearchParams({ id: championId });
+    const response = await this.request<{ logs: string }>(`/logs?${query.toString()}`);
+    const raw = response.logs ?? '';
+    const turns: SessionTurn[] = [];
+    const blocks = raw.split(/\n\n(?=\[(HUMAN|ASSISTANT)\]\n)/);
+    for (const block of blocks) {
+      const match = /^\[(HUMAN|ASSISTANT)\]\n([\s\S]*)$/.exec(block.trim());
+      if (match) {
+        turns.push({
+          role: match[1] === 'HUMAN' ? 'human' : 'assistant',
+          text: match[2]
+        });
+      }
+    }
+    return turns;
+  }
+
+  async inspectSession(championId: string): Promise<StoredSession> {
+    const query = new URLSearchParams({ id: championId });
+    const response = await this.request<{ session: StoredSession }>(`/inspect?${query.toString()}`);
+    return response.session;
   }
 
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {

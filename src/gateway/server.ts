@@ -466,6 +466,48 @@ export function createGatewayApp(
     }
   });
 
+  app.get('/logs', async (req: Request, res: Response) => {
+    try {
+      const sessionId = ensureNonEmptyString(req.query.id, 'id');
+      const result = await executeCommand(['logs', sessionId]);
+      res.json({
+        ok: true,
+        logs: result.stdout,
+        output: serializeCommandResult(result)
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error && /required and must be a non-empty string/.test(error.message)) {
+        jsonError(res, 400, error.message);
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/inspect', async (req: Request, res: Response) => {
+    try {
+      const sessionId = ensureNonEmptyString(req.query.id, 'id');
+      const result = await executeCommand(['inspect', sessionId]);
+      let session: unknown;
+      try {
+        session = JSON.parse(result.stdout);
+      } catch {
+        session = null;
+      }
+      res.json({
+        ok: true,
+        session,
+        output: serializeCommandResult(result)
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error && /required and must be a non-empty string/.test(error.message)) {
+        jsonError(res, 400, error.message);
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
       status: 'healthy'

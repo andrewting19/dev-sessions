@@ -1,4 +1,4 @@
-import { SessionCli, StoredSession } from '../types';
+import { SessionCli, SessionTurn, StoredSession } from '../types';
 import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
 import { CodexAppServerBackend } from './codex-appserver';
 
@@ -199,6 +199,10 @@ export class CodexBackend implements Backend {
       session.internalId
     );
     return alive ? 'alive' : 'dead';
+  }
+
+  async getLogs(session: StoredSession): Promise<SessionTurn[]> {
+    return this.raw.getThreadTurns(session.internalId);
   }
 
   async getLastMessages(session: StoredSession, count: number): Promise<string[]> {

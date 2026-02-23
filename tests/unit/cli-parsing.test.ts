@@ -28,7 +28,12 @@ function createManagerMock(): SessionManagerLike {
     listSessions: vi.fn().mockResolvedValue([createMockSession('fizz-top')]),
     getLastAssistantTextBlocks: vi.fn().mockResolvedValue(['done']),
     getSessionStatus: vi.fn().mockResolvedValue('idle'),
-    waitForSession: vi.fn().mockResolvedValue({ completed: true, timedOut: false, elapsedMs: 1000 })
+    waitForSession: vi.fn().mockResolvedValue({ completed: true, timedOut: false, elapsedMs: 1000 }),
+    getSessionLogs: vi.fn().mockResolvedValue([
+      { role: 'human', text: 'hello' },
+      { role: 'assistant', text: 'world' }
+    ]),
+    inspectSession: vi.fn().mockResolvedValue(createMockSession('fizz-top'))
   };
 }
 
@@ -420,6 +425,43 @@ describe('CLI argument parsing', () => {
     );
     expect(output.stdout).toContain('dev-sessions');
     expect(output.stdout).toContain('handoff');
+  });
+
+  it('logs command calls getSessionLogs and prints turns with role labels', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'logs', 'fizz-top']);
+
+    expect(manager.getSessionLogs).toHaveBeenCalledWith('fizz-top');
+    expect(output.stdout).toContain('[HUMAN]');
+    expect(output.stdout).toContain('hello');
+    expect(output.stdout).toContain('[ASSISTANT]');
+    expect(output.stdout).toContain('world');
+  });
+
+  it('logs command prints no-history message when logs are empty', async () => {
+    const manager = createManagerMock();
+    (manager.getSessionLogs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'logs', 'fizz-top']);
+
+    expect(output.stdout).toContain('No conversation history available');
+  });
+
+  it('inspect command calls inspectSession and prints JSON', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'inspect', 'fizz-top']);
+
+    expect(manager.inspectSession).toHaveBeenCalledWith('fizz-top');
+    const parsed = JSON.parse(output.stdout) as { championId: string };
+    expect(parsed.championId).toBe('fizz-top');
   });
 
   it('installs all skills for all targets when multiple skills and targets exist', async () => {

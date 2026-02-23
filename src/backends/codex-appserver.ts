@@ -803,6 +803,62 @@ function extractThreadReadAssistantMessages(result: unknown): string[] {
   return messages;
 }
 
+function extractUserMessageText(item: Record<string, unknown>): string {
+  if (Array.isArray(item.content)) {
+    const parts: string[] = [];
+    for (const part of item.content as unknown[]) {
+      if (typeof part === 'string') {
+        parts.push(part);
+      } else if (part && typeof part === 'object') {
+        const p = part as Record<string, unknown>;
+        if (typeof p.text === 'string' && p.text.length > 0) {
+          parts.push(p.text);
+        }
+      }
+    }
+    if (parts.length > 0) {
+      return parts.join('');
+    }
+  }
+  if (typeof item.text === 'string') {
+    return item.text;
+  }
+  return '';
+}
+
+function extractThreadTurns(result: unknown): Array<{ role: 'human' | 'assistant'; text: string }> {
+  if (!result || typeof result !== 'object') {
+    throw new Error('thread/read returned an invalid response');
+  }
+  const thread = (result as Record<string, unknown>).thread;
+  if (!thread || typeof thread !== 'object') {
+    throw new Error('thread/read response is missing result.thread');
+  }
+  const turns = (thread as Record<string, unknown>).turns;
+  if (!Array.isArray(turns)) {
+    throw new Error('thread/read response is missing result.thread.turns');
+  }
+  const sessionTurns: Array<{ role: 'human' | 'assistant'; text: string }> = [];
+  for (const turn of turns as unknown[]) {
+    if (!turn || typeof turn !== 'object') continue;
+    const items = (turn as Record<string, unknown>).items;
+    if (!Array.isArray(items)) continue;
+    for (const item of items as unknown[]) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      if (rec.type === 'userMessage') {
+        const text = extractUserMessageText(rec);
+        if (text.length > 0) {
+          sessionTurns.push({ role: 'human', text });
+        }
+      } else if (rec.type === 'agentMessage' && typeof rec.text === 'string' && rec.text.length > 0) {
+        sessionTurns.push({ role: 'assistant', text: rec.text });
+      }
+    }
+  }
+  return sessionTurns;
+}
+
 function extractDeltaText(params: unknown): string {
   if (!params || typeof params !== 'object') {
     return '';
@@ -1072,6 +1128,28 @@ export class CodexAppServerBackend {
       });
       state.assistantHistory = result;
       return result.slice(-safeCount);
+    } catch (error) {
+      if (this.isThreadReadUnmaterializedError(error)) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  async getThreadTurns(threadId: string): Promise<Array<{ role: 'human' | 'assistant'; text: string }>> {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return [];
+    }
+    try {
+      const { result } = await this.withConnectedClient(async (client) => {
+        const readResult = await client.request('thread/read', {
+          threadId: normalizedThreadId,
+          includeTurns: true
+        });
+        return extractThreadTurns(readResult);
+      });
+      return result;
     } catch (error) {
       if (this.isThreadReadUnmaterializedError(error)) {
         return [];

@@ -10,7 +10,7 @@ import {
   uninstallGatewayDaemon
 } from './gateway/daemon';
 import { resolveGatewayCliBinary, resolveGatewayPort, startGatewayServer } from './gateway/server';
-import { AgentTurnStatus, StoredSession, WaitResult } from './types';
+import { AgentTurnStatus, SessionTurn, StoredSession, WaitResult } from './types';
 
 interface CliIO {
   stdout: Pick<NodeJS.WriteStream, 'write'>;
@@ -48,6 +48,8 @@ export interface SessionManagerLike {
   getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]>;
   getSessionStatus(championId: string): Promise<AgentTurnStatus>;
   waitForSession(championId: string, options: WaitOptions): Promise<WaitResult>;
+  getSessionLogs(championId: string): Promise<SessionTurn[]>;
+  inspectSession(championId: string): Promise<StoredSession>;
 }
 
 class CliError extends Error {
@@ -340,6 +342,31 @@ export function buildProgram(
       }
 
       io.stdout.write('completed\n');
+    });
+
+  program
+    .command('logs <id>')
+    .description('Show full conversation history for a session (human and assistant turns in order)')
+    .action(async (id: string) => {
+      const turns = await manager.getSessionLogs(id);
+
+      if (turns.length === 0) {
+        io.stdout.write('No conversation history available\n');
+        return;
+      }
+
+      const formatted = turns
+        .map((turn) => `[${turn.role.toUpperCase()}]\n${turn.text}`)
+        .join('\n\n');
+      io.stdout.write(`${formatted}\n`);
+    });
+
+  program
+    .command('inspect <id>')
+    .description('Dump raw stored session record as JSON')
+    .action(async (id: string) => {
+      const session = await manager.inspectSession(id);
+      io.stdout.write(`${JSON.stringify(session, null, 2)}\n`);
     });
 
   const gatewayCmd = program

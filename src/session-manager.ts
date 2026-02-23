@@ -7,7 +7,7 @@ import { CodexBackend } from './backends/codex-backend';
 import { CodexAppServerBackend } from './backends/codex-appserver';
 import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { SessionStore, createDefaultSessionStore } from './session-store';
-import { AgentTurnStatus, SessionCli, SessionMode, StoredSession, WaitResult } from './types';
+import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from './types';
 
 export interface CreateSessionOptions {
   path?: string;
@@ -182,6 +182,16 @@ export class SessionManager {
     }
 
     return result.status;
+  }
+
+  async getSessionLogs(championId: string): Promise<SessionTurn[]> {
+    const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    return backend.getLogs(session);
+  }
+
+  async inspectSession(championId: string): Promise<StoredSession> {
+    return this.requireSession(championId);
   }
 
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
