@@ -1,20 +1,12 @@
-import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import { generateChampionId, toTmuxSessionName } from './champion-ids';
+import { generateChampionId } from './champion-ids';
+import { Backend } from './backends/backend';
+import { ClaudeBackend } from './backends/claude-backend';
 import { ClaudeTmuxBackend } from './backends/claude-tmux';
+import { CodexBackend } from './backends/codex-backend';
 import { CodexAppServerBackend } from './backends/codex-appserver';
 import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { SessionStore, createDefaultSessionStore } from './session-store';
-import {
-  countAssistantMessages,
-  countSystemEntries,
-  getAssistantTextBlocks,
-  getClaudeTranscriptPath,
-  hasAssistantResponseAfterLatestUser,
-  inferTranscriptStatus,
-  readClaudeTranscript
-} from './transcript/claude-parser';
 import { AgentTurnStatus, SessionCli, SessionMode, StoredSession, WaitResult } from './types';
 
 export interface CreateSessionOptions {
@@ -31,56 +23,58 @@ export interface WaitOptions {
 }
 
 export class SessionManager {
+  private readonly backends: Map<SessionCli, Backend>;
+
   constructor(
     private readonly store: SessionStore,
-    private readonly claudeBackend: ClaudeTmuxBackend,
-    private readonly codexBackend: CodexAppServerBackend = new CodexAppServerBackend()
-  ) {}
+    claudeBackend: Backend,
+    codexBackend: Backend
+  ) {
+    this.backends = new Map([
+      ['claude', claudeBackend],
+      ['codex', codexBackend]
+    ]);
+  }
+
+  private getBackend(cli: SessionCli): Backend {
+    const backend = this.backends.get(cli);
+    if (!backend) {
+      throw new Error(`No backend registered for cli: ${cli}`);
+    }
+    return backend;
+  }
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
     const workspacePath = path.resolve(options.path ?? process.cwd());
     const cli = options.cli ?? 'claude';
+    const backend = this.getBackend(cli);
     const championId = await this.findAvailableChampionId();
     const timestamp = new Date().toISOString();
-    let session: StoredSession;
 
-    if (cli === 'codex') {
-      const model = options.model ?? 'gpt-5.3-codex';
-      const codexSession = await this.codexBackend.createSession(championId, workspacePath, model);
-      session = {
-        championId,
-        internalId: codexSession.threadId,
-        cli: 'codex',
-        mode: 'native',
-        path: workspacePath,
-        description: options.description,
-        status: 'active',
-        appServerPid: codexSession.appServerPid,
-        appServerPort: codexSession.appServerPort,
-        model: codexSession.model,
-        codexTurnInProgress: false,
-        lastAssistantMessages: [],
-        createdAt: timestamp,
-        lastUsed: timestamp
-      };
-    } else {
-      const mode = options.mode ?? 'yolo';
-      const tmuxSessionName = toTmuxSessionName(championId);
-      const internalId = randomUUID();
+    const result = await backend.create({
+      championId,
+      workspacePath,
+      description: options.description,
+      mode: options.mode,
+      model: options.model
+    });
 
-      await this.claudeBackend.createSession(tmuxSessionName, workspacePath, mode, internalId);
-      session = {
-        championId,
-        internalId,
-        cli: 'claude',
-        mode,
-        path: workspacePath,
-        description: options.description,
-        status: 'active',
-        createdAt: timestamp,
-        lastUsed: timestamp
-      };
-    }
+    const session: StoredSession = {
+      championId,
+      internalId: result.internalId,
+      cli,
+      mode: result.mode,
+      path: workspacePath,
+      description: options.description,
+      status: 'active',
+      appServerPid: result.appServerPid,
+      appServerPort: result.appServerPort,
+      model: result.model,
+      codexTurnInProgress: result.codexTurnInProgress,
+      lastAssistantMessages: result.lastAssistantMessages,
+      createdAt: timestamp,
+      lastUsed: timestamp
+    };
 
     await this.store.upsertSession(session);
     return session;
@@ -88,105 +82,50 @@ export class SessionManager {
 
   async sendMessage(championId: string, message: string): Promise<void> {
     const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    const sendTime = new Date().toISOString();
 
-    if (session.cli === 'codex') {
-      const sendTime = new Date().toISOString();
-      await this.store.updateSession(championId, {
-        lastUsed: sendTime,
-        status: 'active',
-        codexTurnInProgress: true,
-        lastTurnStatus: undefined,
-        lastTurnError: undefined
-      });
-
-      let sendResult: Awaited<ReturnType<CodexAppServerBackend['sendMessage']>>;
-      try {
-        sendResult = await this.codexBackend.sendMessage(session.championId, session.internalId, message, {
-          workspacePath: session.path,
-          model: session.model
-        });
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          await this.store.updateSession(championId, {
-            codexTurnInProgress: false,
-            lastTurnStatus: 'failed',
-            lastTurnError: error.message,
-            lastUsed: new Date().toISOString()
-          });
-        }
-
-        throw error;
-      }
-
-      await this.store.updateSession(championId, {
-        internalId: sendResult.threadId,
-        appServerPid: sendResult.appServerPid,
-        appServerPort: sendResult.appServerPort
-      });
-
-      return;
+    const preSendFields = backend.preSendStoreFields(session, sendTime);
+    if (Object.keys(preSendFields).length > 0) {
+      await this.store.updateSession(championId, preSendFields);
     }
 
-    const tmuxSessionName = toTmuxSessionName(session.championId);
-    const sendTime = new Date().toISOString();
-    await this.claudeBackend.sendMessage(tmuxSessionName, message);
+    let postSendFields: Partial<StoredSession>;
+    try {
+      postSendFields = await backend.send(session, message);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        const errorFields = backend.onSendError(session, error);
+        if (Object.keys(errorFields).length > 0) {
+          await this.store.updateSession(championId, errorFields);
+        }
+      }
+      throw error;
+    }
 
-    await this.store.updateSession(championId, {
-      lastUsed: sendTime,
-      status: 'active',
-      lastTurnStatus: undefined,
-      lastTurnError: undefined
-    });
+    if (Object.keys(postSendFields).length > 0) {
+      await this.store.updateSession(championId, postSendFields);
+    }
   }
 
   async killSession(championId: string): Promise<void> {
     const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
 
-    if (session.cli === 'codex') {
-      await this.codexBackend.killSession(
-        session.championId,
-        session.appServerPid,
-        session.internalId,
-        session.appServerPort
-      );
-    } else {
-      const tmuxSessionName = toTmuxSessionName(session.championId);
-
-      try {
-        await this.claudeBackend.killSession(tmuxSessionName);
-      } catch (error: unknown) {
-        if (
-          !(error instanceof Error) ||
-          !/failed to connect server|no server running|can't find session/i.test(error.message)
-        ) {
-          throw error;
-        }
-      }
-    }
-
+    await backend.kill(session);
     await this.store.deleteSession(championId);
 
-    if (session.cli === 'codex' && !(await this.hasActiveCodexSessions())) {
-      await this.codexBackend.stopAppServer();
-    }
+    const remainingActive = (await this.store.listSessions()).filter((s) => s.status === 'active');
+    await backend.afterKill(remainingActive);
   }
 
   async listSessions(): Promise<StoredSession[]> {
     const sessions = (await this.store.listSessions()).filter((session) => session.status === 'active');
     const livenessChecks = await Promise.all(
       sessions.map(async (session) => {
-        if (session.cli === 'codex') {
-          const exists = await this.codexBackend.sessionExists(
-            session.championId,
-            session.appServerPid,
-            session.appServerPort,
-            session.internalId
-          );
-          return { championId: session.championId, liveness: exists ? 'alive' : 'dead' as const };
-        } else {
-          const liveness = await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId));
-          return { championId: session.championId, liveness };
-        }
+        const backend = this.getBackend(session.cli);
+        const liveness = await backend.exists(session);
+        return { championId: session.championId, cli: session.cli, liveness };
       })
     );
 
@@ -199,26 +138,25 @@ export class SessionManager {
     const deadSessions = sessions.filter((session) =>
       livenessChecks.some((check) => check.championId === session.championId && check.liveness === 'dead')
     );
-    const deadCodexSessionIds = deadSessions
-      .filter((session) => session.cli === 'codex')
-      .map((session) => session.championId);
-    const deadNonCodexSessionIds = deadSessions
-      .filter((session) => session.cli !== 'codex')
-      .map((session) => session.championId);
 
-    if (deadCodexSessionIds.length > 0) {
+    const deadDeactivateIds = deadSessions
+      .filter((s) => this.getBackend(s.cli).deadSessionPolicy === 'deactivate')
+      .map((s) => s.championId);
+
+    const deadPruneIds = deadSessions
+      .filter((s) => this.getBackend(s.cli).deadSessionPolicy === 'prune')
+      .map((s) => s.championId);
+
+    if (deadDeactivateIds.length > 0) {
       await Promise.all(
-        deadCodexSessionIds.map(async (deadSessionId) => {
-          await this.store.updateSession(deadSessionId, {
-            status: 'inactive',
-            codexTurnInProgress: false
-          });
-        })
+        deadDeactivateIds.map((id) =>
+          this.store.updateSession(id, { status: 'inactive', codexTurnInProgress: false })
+        )
       );
     }
 
-    if (deadNonCodexSessionIds.length > 0) {
-      await this.store.pruneSessions(deadNonCodexSessionIds);
+    if (deadPruneIds.length > 0) {
+      await this.store.pruneSessions(deadPruneIds);
     }
 
     return (await this.store.listSessions()).filter((session) => session.status === 'active');
@@ -226,229 +164,46 @@ export class SessionManager {
 
   async getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]> {
     const session = await this.requireSession(championId);
-
-    if (session.cli === 'codex') {
-      const safeCount = Math.max(1, count);
-      const sessionMessages = session.lastAssistantMessages ?? [];
-      if (sessionMessages.length > 0) {
-        return sessionMessages.slice(-safeCount);
-      }
-
-      return await this.codexBackend.getLastAssistantMessages(championId, session.internalId, safeCount);
-    }
-
-    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
-    const transcriptEntries = await readClaudeTranscript(transcriptPath);
-    const blocks = getAssistantTextBlocks(transcriptEntries);
-
-    return blocks.slice(-Math.max(1, count));
+    const backend = this.getBackend(session.cli);
+    return backend.getLastMessages(session, count);
   }
 
   async getSessionStatus(championId: string): Promise<AgentTurnStatus> {
     const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    const result = await backend.status(session);
 
-    if (session.cli === 'codex') {
-      if (session.codexTurnInProgress) {
-        return 'working';
-      }
-
-      if (session.lastTurnStatus === 'failed') {
-        // Re-check live thread status — cached 'failed' may be stale (e.g. from a previous bug)
-        let liveStatus: Awaited<ReturnType<typeof this.codexBackend.getThreadRuntimeStatus>>;
-        try {
-          liveStatus = await this.codexBackend.getThreadRuntimeStatus(session.internalId);
-        } catch {
-          liveStatus = 'unknown';
-        }
-        if (liveStatus === 'active') {
-          return 'working';
-        }
-        if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
-          await this.store.updateSession(championId, { lastTurnStatus: 'completed', lastTurnError: undefined });
-          return 'idle';
-        }
-        // Truly failed, unknown, or couldn't connect — report cached error
-        const suffix = session.lastTurnError ? `: ${session.lastTurnError}` : '';
-        throw new Error(`Codex turn failed${suffix}`);
-      }
-
-      return 'idle';
+    if (result.storeUpdate && Object.keys(result.storeUpdate).length > 0) {
+      await this.store.updateSession(championId, result.storeUpdate);
     }
 
-    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
-    const transcriptEntries = await readClaudeTranscript(transcriptPath);
+    if (result.errorToThrow) {
+      throw result.errorToThrow;
+    }
 
-    return inferTranscriptStatus(transcriptEntries);
+    return result.status;
   }
 
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
     const session = await this.requireSession(championId);
-
-    if (session.cli === 'codex') {
-      const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
-
-      if (!session.codexTurnInProgress && session.lastTurnStatus === 'failed') {
-        // Re-check live thread status before giving up — cached 'failed' may be stale
-        let liveStatus: Awaited<ReturnType<typeof this.codexBackend.getThreadRuntimeStatus>>;
-        try {
-          liveStatus = await this.codexBackend.getThreadRuntimeStatus(session.internalId);
-        } catch {
-          liveStatus = 'unknown';
-        }
-        if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
-          await this.store.updateSession(championId, { lastTurnStatus: 'completed', lastTurnError: undefined });
-          return { completed: true, timedOut: false, elapsedMs: 0 };
-        }
-        if (liveStatus !== 'active') {
-          // Couldn't determine live status or truly failed — report cached error
-          const message = session.lastTurnError
-            ? `Codex turn failed: ${session.lastTurnError}`
-            : 'Codex turn failed';
-          throw new Error(message);
-        }
-        // Thread is active — fall through to waitForThread below
-      }
-
-      await this.store.updateSession(championId, {
-        lastUsed: new Date().toISOString()
-      });
-
-      if (!session.codexTurnInProgress) {
-        if (session.lastTurnStatus === 'interrupted') {
-          return {
-            completed: false,
-            timedOut: true,
-            elapsedMs: timeoutMs
-          };
-        }
-
-        return {
-          completed: true,
-          timedOut: false,
-          elapsedMs: 0
-        };
-      }
-
-      let waitResult: Awaited<ReturnType<CodexAppServerBackend['waitForThread']>>;
-      try {
-        waitResult = await this.codexBackend.waitForThread(championId, session.internalId, timeoutMs);
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          const latestSession = await this.store.getSession(championId);
-          if (latestSession?.cli === 'codex' && latestSession.codexTurnInProgress === true) {
-            await this.store.updateSession(championId, {
-              codexTurnInProgress: false,
-              lastTurnStatus: 'failed',
-              lastTurnError: error.message,
-              lastUsed: new Date().toISOString()
-            });
-          }
-        }
-
-        throw error;
-      }
-
-      const completionTime = new Date().toISOString();
-      const turnStillInProgress = waitResult.timedOut;
-      await this.store.updateSession(championId, {
-        lastUsed: completionTime,
-        codexTurnInProgress: turnStillInProgress,
-        codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
-        lastTurnStatus: waitResult.status,
-        lastTurnError: waitResult.errorMessage
-      });
-
-      if (waitResult.status === 'failed') {
-        const message = waitResult.errorMessage ? `Codex turn failed: ${waitResult.errorMessage}` : 'Codex turn failed';
-        throw new Error(message);
-      }
-
-      return {
-        completed: !waitResult.timedOut && waitResult.status !== 'interrupted',
-        timedOut: waitResult.timedOut || waitResult.status === 'interrupted',
-        elapsedMs: waitResult.elapsedMs
-      };
-    }
-
-    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
+    const backend = this.getBackend(session.cli);
     const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
     const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
-    const startTime = Date.now();
-    const deadline = startTime + timeoutMs;
-    const latestSendMs = Date.parse(session.lastUsed);
-    const initialEntries = await readClaudeTranscript(transcriptPath);
-    const baselineAssistantCount = countAssistantMessages(initialEntries);
-    const baselineSystemCount = countSystemEntries(initialEntries);
 
-    let lastMtimeMs = -1;
-    let shouldReadTranscript = false;
-    let cachedEntries: Awaited<ReturnType<typeof readClaudeTranscript>> = initialEntries;
+    const result = await backend.wait(session, timeoutMs, intervalMs);
 
-    while (Date.now() <= deadline) {
-      try {
-        const fileStat = await stat(transcriptPath);
-        if (fileStat.mtimeMs !== lastMtimeMs) {
-          lastMtimeMs = fileStat.mtimeMs;
-          shouldReadTranscript = true;
-        }
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          throw error;
-        }
+    if (Object.keys(result.storeUpdate).length > 0) {
+      await this.store.updateSession(championId, result.storeUpdate);
+    }
 
-        shouldReadTranscript = true;
-        cachedEntries = [];
-      }
-
-      if (shouldReadTranscript) {
-        cachedEntries = await readClaudeTranscript(transcriptPath);
-        shouldReadTranscript = false;
-      }
-
-      const status = inferTranscriptStatus(cachedEntries);
-      const hasNewSystemEntry = countSystemEntries(cachedEntries) > baselineSystemCount;
-      const hasNewAssistant = countAssistantMessages(cachedEntries) > baselineAssistantCount;
-      const hasRecentAssistant = this.hasAssistantResponseAtOrAfter(cachedEntries, latestSendMs);
-
-      // Primary signal: a new 'system' entry marks the definitive end of a Claude Code turn.
-      // This avoids false positives from intermediate tool_use assistant entries.
-      if (hasNewSystemEntry && (hasNewAssistant || hasRecentAssistant)) {
-        await this.store.updateSession(championId, {
-          lastUsed: new Date().toISOString()
-        });
-
-        return {
-          completed: true,
-          timedOut: false,
-          elapsedMs: Date.now() - startTime
-        };
-      }
-
-      // Fallback: if inferTranscriptStatus reports idle/waiting and we have new assistant
-      // entries, the turn is complete. This handles transcripts that may not have system entries.
-      if (
-        (status === 'idle' || status === 'waiting_for_input') &&
-        hasAssistantResponseAfterLatestUser(cachedEntries) &&
-        (hasNewAssistant || hasRecentAssistant)
-      ) {
-        await this.store.updateSession(championId, {
-          lastUsed: new Date().toISOString()
-        });
-
-        return {
-          completed: true,
-          timedOut: false,
-          elapsedMs: Date.now() - startTime
-        };
-      }
-
-      await this.sleep(intervalMs);
+    if (result.errorToThrow) {
+      throw result.errorToThrow;
     }
 
     return {
-      completed: false,
-      timedOut: true,
-      elapsedMs: Date.now() - startTime
+      completed: result.completed,
+      timedOut: result.timedOut,
+      elapsedMs: result.elapsedMs
     };
   }
 
@@ -457,11 +212,12 @@ export class SessionManager {
     if (!session) {
       throw new Error(`Session not found: ${championId}`);
     }
-
     return session;
   }
 
   private async findAvailableChampionId(maxAttempts: number = 250): Promise<string> {
+    const allBackends = [...this.backends.values()];
+
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const candidate = generateChampionId();
 
@@ -469,7 +225,11 @@ export class SessionManager {
         continue;
       }
 
-      if ((await this.claudeBackend.sessionExists(toTmuxSessionName(candidate))) === 'alive') {
+      const taken = await Promise.any(
+        allBackends.map((b) => b.isChampionIdTaken(candidate).then((t) => t ? Promise.resolve(true) : Promise.reject(false)))
+      ).catch(() => false);
+
+      if (taken) {
         continue;
       }
 
@@ -477,40 +237,6 @@ export class SessionManager {
     }
 
     throw new Error('Unable to allocate a unique champion ID');
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  }
-
-  private async hasActiveCodexSessions(): Promise<boolean> {
-    const sessions = await this.store.listSessions();
-    return sessions.some((session) => session.status === 'active' && session.cli === 'codex');
-  }
-
-  private hasAssistantResponseAtOrAfter(
-    entries: Awaited<ReturnType<typeof readClaudeTranscript>>,
-    thresholdMs: number
-  ): boolean {
-    if (!Number.isFinite(thresholdMs)) {
-      return false;
-    }
-
-    return entries.some((entry) => {
-      if (entry.type?.toLowerCase() !== 'assistant') {
-        return false;
-      }
-
-      const timestamp = entry.timestamp;
-      if (typeof timestamp !== 'string') {
-        return false;
-      }
-
-      const parsed = Date.parse(timestamp);
-      return !Number.isNaN(parsed) && parsed >= thresholdMs;
-    });
   }
 }
 
@@ -527,5 +253,9 @@ export function createDefaultSessionManager(
     });
   }
 
-  return new SessionManager(createDefaultSessionStore(), new ClaudeTmuxBackend(), new CodexAppServerBackend());
+  return new SessionManager(
+    createDefaultSessionStore(),
+    new ClaudeBackend(new ClaudeTmuxBackend()),
+    new CodexBackend(new CodexAppServerBackend())
+  );
 }

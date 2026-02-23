@@ -89,11 +89,8 @@
 #### ~~Make `send` non-blocking~~ ✅
 `send` now returns immediately after `turn/start` is accepted (Codex) or after tmux send-keys (Claude). `wait` is the dedicated blocking primitive. Overlap guard removed — app-server queues turns naturally.
 
-#### Tmux tri-state liveness (#6)
-**Why:** `sessionExists()` for Claude converts all tmux errors to `false`, causing `listSessions()` to prune valid sessions on any transient error (tmux slow, PATH issue, etc.).
-**What:** Return a tri-state: `'alive' | 'dead' | 'unknown'`. Only prune on `'dead'` (explicit "session not found" from tmux). `'unknown'` (unexpected error) should preserve the session record and log a warning.
-**Files:** `src/backends/claude-tmux.ts` (`sessionExists`), `src/session-manager.ts` (`listSessions`)
-**Scope:** Small — ~20-30 lines changed.
+#### ~~Tmux tri-state liveness (#6)~~ ✅
+`sessionExists()` returns `'alive' | 'dead' | 'unknown'`. `listSessions()` only prunes on `'dead'`; `'unknown'` preserves the session record.
 
 ### Medium Priority
 
@@ -115,24 +112,8 @@
 
 ### Architecture
 
-#### Backend adapter interface (#13)
-**Why:** `SessionManager` currently mixes persistence, transcript parsing, and backend-specific lifecycle logic. Claude and Codex paths are handled with `if/else` branches scattered through the manager rather than proper polymorphism. This makes bugs harder to fix cleanly and testing more complex.
-**What:** Define a normalized `Backend` interface:
-```typescript
-interface Backend {
-  create(options): Promise<{ internalId: string; tmuxWindow?: string }>
-  send(session, message): Promise<void>
-  wait(session, timeoutMs): Promise<WaitResult>
-  status(session): Promise<AgentTurnStatus>
-  exists(session): Promise<'alive' | 'dead' | 'unknown'>
-  getLastMessages(session, count): Promise<string[]>
-  kill(session): Promise<void>
-}
-```
-Then `SessionManager` routes to the right backend without knowing about tmux or WebSockets. Store mutations stay in a separate coordinator layer.
-**Impact:** Prerequisite for clean fixes of #2/#3/#6/#8/#9. Makes adding new backends trivial.
-**Files:** New `src/backends/types.ts`, refactor `src/session-manager.ts`, update both backends.
-**Note:** Do this before #2/#3/#8/#9 — those fixes will be much cleaner on top of the new structure.
+#### ~~Backend adapter interface (#13)~~ ✅
+`Backend` interface defined in `src/backends/backend.ts`. `ClaudeBackend` and `CodexBackend` adapters in `src/backends/claude-backend.ts` and `src/backends/codex-backend.ts`. `SessionManager` now routes through a `Map<SessionCli, Backend>` with no `if (session.cli === 'codex')` branches. All 123 tests pass.
 
 ### Polish
 - [ ] `send --file` with template variables (inject session context)

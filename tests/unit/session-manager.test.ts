@@ -2,7 +2,9 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ClaudeBackend } from '../../src/backends/claude-backend';
 import { ClaudeTmuxBackend } from '../../src/backends/claude-tmux';
+import { CodexBackend } from '../../src/backends/codex-backend';
 import {
   CodexAppServerBackend,
   CodexSendResult,
@@ -196,7 +198,7 @@ describe('SessionManager', () => {
     store = new SessionStore(path.join(tmpDir, 'sessions.json'));
     backend = new FakeClaudeBackend();
     codexBackend = new FakeCodexBackend();
-    manager = new SessionManager(store, backend, codexBackend);
+    manager = new SessionManager(store, new ClaudeBackend(backend), new CodexBackend(codexBackend));
   });
 
   afterEach(async () => {
@@ -551,8 +553,8 @@ describe('SessionManager', () => {
       }
     }
 
-    const unstableBackend = new UnstableBackend();
-    const unstableManager = new SessionManager(store, unstableBackend, new FakeCodexBackend());
+    const unstableRaw = new UnstableBackend();
+    const unstableManager = new SessionManager(store, new ClaudeBackend(unstableRaw), new CodexBackend(new FakeCodexBackend()));
     const session = await unstableManager.createSession({ path: tmpDir });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
