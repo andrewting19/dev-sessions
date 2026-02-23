@@ -5,34 +5,47 @@ description: Mindset and principles for orchestrating sub-agents well. Read befo
 
 # Delegate: Agent Orchestration Mindset
 
-For mechanics, see the `dev-sessions` skill. This is about *how to think* before you delegate.
+For mechanics, see the `dev-sessions` skill. This is about *how to think* as an orchestrator.
 
 ---
 
-## The core question before delegating
+## The mental model
 
-**Do you already have full context on what needs to be done and how?**
+Your job as orchestrator is **judgment and synthesis** — holding the big picture, making decisions, staying at the right altitude. Sub-agents are your specialists: highly intelligent, capable of going deep on a focused problem. Your constraint is context window. Theirs is scope.
 
-- **Yes** → be specific. Precise instructions to a sub-agent with full context are good. Vagueness wastes turns.
-- **No, or uncertain** → ask the sub-agent to explore and propose first. Lock in the approach only after you've seen the proposal. Sub-agents read code you haven't; their perspective has value.
-
-Most orchestration failures come from prescribing solutions before having enough context, then getting code that implements the wrong thing correctly.
+This division of labor only works if you respect it. Don't burn your context on implementation details sub-agents can handle. Don't make decisions sub-agents are better positioned to make after reading the code. And don't delegate judgment — that's your job.
 
 ---
 
-## Prompting principles
+## Alignment before implementation
 
-- **Goal over method.** State what success looks like, not how to achieve it — unless you're certain of the how.
-- **Verifiable acceptance criteria.** "All tests pass" is verifiable. "Looks clean" is not. Sub-agents use these to know when they're done.
-- **Point at relevant files.** Don't make sub-agents discover context from scratch.
-- **Constraints that actually matter.** "Don't change the public API" is a real constraint. Implementation preferences usually aren't.
-- **Always set `--path` explicitly.** Sub-agents default to their CWD, which may not be the repo you mean.
+The most expensive mistake is a sub-agent that implements the wrong thing correctly. Before delegating implementation, make sure the agent's understanding of the problem matches yours.
+
+For anything non-trivial, ask for a proposal or plan first. Read it. If it matches your mental model, say go. If it doesn't, correct the misalignment now — not after a full implementation turn. This is cheap. Rework is expensive.
+
+This isn't a rule to follow — it's a consequence of the mental model. You're verifying shared understanding before the agent goes deep.
+
+For simpler tasks where you already have full context and know exactly what you want, skip straight to implementation. The proposal step only earns its cost when there's real uncertainty about approach.
 
 ---
 
-## When to get multiple opinions
+## Prompting: principles over tips
 
-For non-trivial design decisions, ask Claude and Codex independently before acting. Agents that see each other's output anchor to it — keep them separate.
+Sub-agents are intelligent. Give them enough to reason from, not a script to follow. The goal is shared understanding, not compliance.
+
+What actually matters in a brief:
+- **What success looks like** — verifiable, not subjective. "All tests pass" not "looks clean."
+- **What they should read first** — don't make them discover context from scratch
+- **Real constraints** — things that genuinely bound the solution, not implementation preferences
+- **Always set `--path`** — sub-agents default to their CWD
+
+What to avoid: over-specifying how to implement something when you're not certain it's right. You become responsible for a design decision you made without full context.
+
+---
+
+## Multiple perspectives: worth it sometimes, not always
+
+Getting Claude and Codex to independently explore a design question before you commit is valuable — but it takes time. Reserve it for decisions that are genuinely hard to reverse or high stakes.
 
 ```bash
 s1=$(dev-sessions create -q --cli claude --path /repo --description "design: X")
@@ -43,22 +56,14 @@ dev-sessions wait "$s1" && dev-sessions last-message "$s1"
 dev-sessions wait "$s2" && dev-sessions last-message "$s2"
 ```
 
-Both Claude and Codex are strong. Codex tends to be more direct on implementation questions; Claude tends to reason more carefully about tradeoffs. For important decisions, hearing both is worth it.
+Keep them independent — agents that see each other's output anchor to it. Synthesize yourself. Both Claude and Codex are strong; Codex tends to be more direct on implementation, Claude tends to reason more carefully about tradeoffs.
 
-Synthesize yourself — don't outsource the final call to either agent.
-
----
-
-## When not to delegate
-
-- The task is simple enough to do directly — delegation overhead isn't worth it
-- The task requires tight back-and-forth that only you can provide
-- You'd spend more time writing the brief than doing the work
+For smaller decisions: explore quickly yourself, or just delegate with a clear brief if you already understand the problem.
 
 ---
 
-## Handling results
+## Synthesizing results
 
-- Check results against your acceptance criteria — don't just accept because the agent says it's done
-- If parallel sessions produced conflicting changes, reconcile explicitly rather than merging blindly
-- If a sub-agent ran for a long time and produced nothing useful, check `last-message -n 5` to understand where it got stuck, then re-engage with a more focused prompt
+Results come back to you for judgment, not acceptance. Check them against your acceptance criteria. Reconcile conflicts between parallel sessions explicitly — don't merge blindly. If something produced nothing useful, check `last-message -n 5` to understand where it got stuck, then re-engage with a more focused prompt.
+
+The synthesis step is where your value as orchestrator lives. Don't skip it.
