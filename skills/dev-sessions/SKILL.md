@@ -69,12 +69,4 @@ dev-sessions wait "$s1" && dev-sessions last-message "$s1"
 dev-sessions wait "$s2" && dev-sessions last-message "$s2"
 ```
 
-## Writing Good Task Briefs
-
-```
-Repo: /abs/path/to/repo
-Goal: <what to implement>
-Read first: src/foo.ts, tests/foo.test.ts
-Constraints: do not modify generated files
-Acceptance: all tests pass, new behavior verified in <test>
-```
+See the `delegate` skill for how to think about structuring tasks and prompting sub-agents effectively.
