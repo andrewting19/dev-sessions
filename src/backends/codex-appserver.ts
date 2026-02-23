@@ -77,6 +77,7 @@ export interface CodexSendResult {
   threadId: string;
   appServerPid: number;
   appServerPort: number;
+  assistantText?: string;
 }
 
 export interface CodexRpcClient {
@@ -1022,13 +1023,23 @@ export class CodexAppServerBackend {
         input: [{ type: 'text', text: message }]
       });
 
-      return tid;
+      // Best-effort: wait a short time for the turn to complete on this connection.
+      // Captures fast responses (e.g. short answers) without blocking for long tasks.
+      const FAST_CAPTURE_TIMEOUT_MS = 3_000;
+      const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS);
+      return { tid, assistantText: earlyResult.assistantText };
     });
 
+    const state = this.ensureSessionState(championId);
+    if (activeThreadId.assistantText) {
+      state.assistantHistory.push(activeThreadId.assistantText);
+    }
+
     return {
-      threadId: activeThreadId,
+      threadId: activeThreadId.tid,
       appServerPid: server.pid,
-      appServerPort: server.port
+      appServerPort: server.port,
+      assistantText: activeThreadId.assistantText
     };
   }
 

@@ -41,11 +41,17 @@ export class CodexBackend implements Backend {
       workspacePath: session.path,
       model: session.model
     });
-    return {
+    const existingMessages = session.lastAssistantMessages ?? [];
+    const update: Partial<StoredSession> = {
       internalId: sendResult.threadId,
       appServerPid: sendResult.appServerPid,
       appServerPort: sendResult.appServerPort
     };
+    if (sendResult.assistantText) {
+      update.lastAssistantMessages = [...existingMessages, sendResult.assistantText];
+      update.codexTurnInProgress = false;
+    }
+    return update;
   }
 
   onSendError(_session: StoredSession, error: Error): Partial<StoredSession> {
