@@ -109,11 +109,11 @@ describe('transcript parsing integration', () => {
           })}`,
           'utf8'
         );
-      }, 1_200);
+      }, 200);
 
       const waitResult = await runDevSessionsCli(
-        ['wait', championId, '--timeout', '15', '--interval', '1'],
-        { env: context.env, timeoutMs: 20_000 }
+        ['wait', championId, '--timeout', '5', '--interval', '0.05'],
+        { env: context.env, timeoutMs: 10_000 }
       );
       clearTimeout(appendTimer);
       expect(waitResult.code).toBe(0);

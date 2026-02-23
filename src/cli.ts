@@ -72,6 +72,15 @@ function parsePositiveInteger(raw: string, flagName: string): number {
   return value;
 }
 
+function parsePositiveNumber(raw: string, flagName: string): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new CliError(`${flagName} must be a positive number`);
+  }
+
+  return value;
+}
+
 function getDefaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.IS_SANDBOX === '1' && typeof env.HOST_PATH === 'string' && env.HOST_PATH.trim().length > 0) {
     return env.HOST_PATH;
@@ -331,7 +340,7 @@ export function buildProgram(
     .option('-i, --interval <seconds>', 'Polling interval in seconds', '2')
     .action(async (id: string, options: { timeout: string; interval: string }) => {
       const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
-      const intervalSeconds = parsePositiveInteger(options.interval, '--interval');
+      const intervalSeconds = parsePositiveNumber(options.interval, '--interval');
       const result = await manager.waitForSession(id, {
         timeoutSeconds,
         intervalSeconds
