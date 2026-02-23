@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionStore } from '../../src/session-store';
 import { StoredSession } from '../../src/types';
 
@@ -75,5 +75,41 @@ describe('SessionStore', () => {
 
     const sessions = await store.listSessions();
     expect(sessions.map((session) => session.championId)).toEqual(['riven-jg']);
+  });
+
+  it('warns when invalid session records are dropped during read', async () => {
+    const valid = createSession('fizz-top');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await writeFile(
+        storePath,
+        JSON.stringify(
+          {
+            version: 1,
+            sessions: [
+              valid,
+              {
+                championId: 'broken-mid',
+                internalId: 123,
+                cli: 'codex'
+              }
+            ]
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
+
+      const sessions = await store.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].championId).toBe('fizz-top');
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toContain('ignoring invalid session record');
+      expect(warnSpy.mock.calls[0]?.[0]).toContain('broken-mid');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

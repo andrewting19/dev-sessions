@@ -133,9 +133,24 @@ export class SessionStore {
     try {
       const raw = await readFile(this.storePath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<SessionStoreFile>;
-      const sessions = Array.isArray(parsed.sessions)
-        ? parsed.sessions.filter(isStoredSession)
-        : [];
+      const sessions: StoredSession[] = [];
+      if (Array.isArray(parsed.sessions)) {
+        for (const [index, candidate] of parsed.sessions.entries()) {
+          if (isStoredSession(candidate)) {
+            sessions.push(candidate);
+            continue;
+          }
+
+          const candidateChampionId =
+            candidate && typeof candidate === 'object' && typeof (candidate as { championId?: unknown }).championId === 'string'
+              ? (candidate as { championId: string }).championId
+              : undefined;
+          const championIdSuffix = candidateChampionId ? ` championId=${candidateChampionId}` : '';
+          console.warn(
+            `[dev-sessions] ignoring invalid session record in ${this.storePath} at index ${index}${championIdSuffix}`
+          );
+        }
+      }
 
       return {
         version: typeof parsed.version === 'number' ? parsed.version : CURRENT_VERSION,
