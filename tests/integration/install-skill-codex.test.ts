@@ -60,7 +60,7 @@ describe('install-skill integration', () => {
       'SKILL.md'
     );
     const installedContent = await readFile(installedPath, 'utf8');
-    const sourceContent = await readFile(path.resolve('skill', 'SKILL.md'), 'utf8');
+    const sourceContent = await readFile(path.resolve('skills', 'dev-sessions', 'SKILL.md'), 'utf8');
 
     expect(installedContent).toBe(sourceContent);
   });

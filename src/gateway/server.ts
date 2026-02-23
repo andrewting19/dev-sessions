@@ -24,6 +24,7 @@ export type GatewayCommandExecutor = (args: string[]) => Promise<GatewayCommandR
 
 export interface StartGatewayServerOptions {
   port?: number;
+  host?: string;
   cliBinary?: string;
   executeCommand?: GatewayCommandExecutor;
 }
@@ -480,12 +481,13 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   port: number;
 }> {
   const port = options.port ?? resolveGatewayPort();
+  const host = options.host ?? '127.0.0.1';
   const cliBinary = options.cliBinary ?? resolveGatewayCliBinary();
   const executeCommand = options.executeCommand ?? createGatewayCommandExecutor(cliBinary);
   const app = createGatewayApp(executeCommand);
 
   const server = await new Promise<Server>((resolve, reject) => {
-    const startedServer = app.listen(port, () => {
+    const startedServer = app.listen(port, host, () => {
       resolve(startedServer);
     });
 
@@ -501,6 +503,6 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   return {
     app,
     server,
-    port
+    port: listeningPort
   };
 }

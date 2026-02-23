@@ -1,9 +1,15 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, CommanderError, Option } from 'commander';
+import pkg from '../package.json';
 import { createDefaultSessionManager, CreateSessionOptions, WaitOptions } from './session-manager';
-import { resolveGatewayPort, startGatewayServer } from './gateway/server';
+import {
+  getGatewayDaemonStatus,
+  installGatewayDaemon,
+  uninstallGatewayDaemon
+} from './gateway/daemon';
+import { resolveGatewayCliBinary, resolveGatewayPort, startGatewayServer } from './gateway/server';
 import { AgentTurnStatus, StoredSession, WaitResult } from './types';
 
 interface CliIO {
@@ -20,7 +26,8 @@ interface InstallSkillTargetResolution {
 }
 
 export interface InstallSkillDependencies {
-  skillSourcePath(): string;
+  skillsDirectory(): string;
+  listDirectory(dirPath: string): Promise<string[]>;
   cwd(): string;
   homedir(): string;
   pathExists(candidatePath: string): Promise<boolean>;
@@ -116,7 +123,11 @@ async function pathExists(candidatePath: string): Promise<boolean> {
 
 function createDefaultInstallSkillDependencies(): InstallSkillDependencies {
   return {
-    skillSourcePath: () => path.resolve(__dirname, '..', 'skill', 'SKILL.md'),
+    skillsDirectory: () => path.resolve(__dirname, '..', 'skills'),
+    listDirectory: async (dirPath: string): Promise<string[]> => {
+      const entries = await readdir(dirPath, { withFileTypes: true });
+      return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    },
     cwd: () => process.cwd(),
     homedir: () => os.homedir(),
     pathExists,
@@ -199,7 +210,7 @@ export function buildProgram(
   program
     .name('dev-sessions')
     .description('Spawn and manage coding agent sessions')
-    .version('0.1.0');
+    .version(pkg.version);
 
   program
     .command('create')
@@ -331,14 +342,56 @@ export function buildProgram(
       io.stdout.write('completed\n');
     });
 
-  program
+  const gatewayCmd = program
     .command('gateway')
-    .description('Start the Docker relay gateway HTTP server')
+    .description('Start the Docker relay gateway HTTP server (or manage the daemon)')
     .option('--port <port>', 'Port to listen on', String(resolveGatewayPort()))
     .action(async (options: { port: string }) => {
       const port = parsePositiveInteger(options.port, '--port');
       await startGatewayServer({ port });
       io.stdout.write(`Gateway listening on port ${port}\n`);
+    });
+
+  gatewayCmd
+    .command('install')
+    .description('Install the gateway as a system daemon (launchd on macOS, systemd on Linux)')
+    .option('--port <port>', 'Port for the daemon to listen on', String(resolveGatewayPort()))
+    .action(async (options: { port: string }) => {
+      const port = parsePositiveInteger(options.port, '--port');
+      // Prefer the installed binary on PATH so launchd/systemd can run it as a standalone executable.
+      // Fall back to resolveGatewayCliBinary() for local dev runs.
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      let binaryPath: string;
+      try {
+        const { stdout } = await execFileAsync('which', ['dev-sessions']);
+        binaryPath = stdout.trim();
+      } catch {
+        binaryPath = resolveGatewayCliBinary();
+      }
+      await installGatewayDaemon({ binaryPath, port });
+      io.stdout.write(`Gateway daemon installed and started on port ${port}\n`);
+      io.stdout.write(`\nNote: On macOS you may need to grant Full Disk Access to:\n`);
+      io.stdout.write(`  ${process.execPath}\n`);
+      io.stdout.write(`  System Settings → Privacy & Security → Full Disk Access → add the path above\n`);
+    });
+
+  gatewayCmd
+    .command('uninstall')
+    .description('Stop and remove the gateway daemon')
+    .action(async () => {
+      await uninstallGatewayDaemon();
+      io.stdout.write('Gateway daemon uninstalled\n');
+    });
+
+  gatewayCmd
+    .command('status')
+    .description('Print whether the gateway daemon is running and which port it uses')
+    .action(async () => {
+      const { running, port } = await getGatewayDaemonStatus();
+      const state = running ? 'running' : 'stopped';
+      io.stdout.write(`Gateway daemon: ${state} (port ${port})\n`);
     });
 
   program
@@ -351,35 +404,30 @@ export function buildProgram(
     .action(async (options: { global?: boolean; local?: boolean; claude?: boolean; codex?: boolean }) => {
       const scope = resolveInstallSkillScope(options);
       const { targets, defaultedToClaude } = await resolveInstallSkillTargets(options, installSkillDependencies);
-      const sourcePath = installSkillDependencies.skillSourcePath();
-      const sourceContent = await installSkillDependencies.readFile(sourcePath, 'utf8');
+      const skillsDir = installSkillDependencies.skillsDirectory();
+      const skillNames = await installSkillDependencies.listDirectory(skillsDir);
       const installBasePath =
         scope === 'global'
           ? installSkillDependencies.homedir()
           : path.resolve(installSkillDependencies.cwd());
-      const installedDirectories: string[] = [];
-
-      for (const target of targets) {
-        const destinationDirectory = path.join(
-          installBasePath,
-          `.${target}`,
-          'skills',
-          'dev-sessions'
-        );
-        const destinationFile = path.join(destinationDirectory, 'SKILL.md');
-
-        await installSkillDependencies.mkdir(destinationDirectory, { recursive: true });
-        await installSkillDependencies.writeFile(destinationFile, sourceContent, 'utf8');
-        installedDirectories.push(destinationDirectory);
-      }
 
       if (defaultedToClaude) {
         io.stdout.write('No ~/.claude or ~/.codex found; defaulting to Claude Code.\n');
       }
 
-      installedDirectories.forEach((directoryPath) => {
-        io.stdout.write(`Installed dev-sessions skill: ${directoryPath}\n`);
-      });
+      for (const skillName of skillNames) {
+        const sourcePath = path.join(skillsDir, skillName, 'SKILL.md');
+        const sourceContent = await installSkillDependencies.readFile(sourcePath, 'utf8');
+
+        for (const target of targets) {
+          const destinationDirectory = path.join(installBasePath, `.${target}`, 'skills', skillName);
+          const destinationFile = path.join(destinationDirectory, 'SKILL.md');
+
+          await installSkillDependencies.mkdir(destinationDirectory, { recursive: true });
+          await installSkillDependencies.writeFile(destinationFile, sourceContent, 'utf8');
+          io.stdout.write(`Installed skill: ${skillName} → ${destinationFile}\n`);
+        }
+      }
     });
 
   return program;

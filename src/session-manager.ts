@@ -90,9 +90,9 @@ export class SessionManager {
     const session = await this.requireSession(championId);
 
     if (session.cli === 'codex') {
-      const turnStartTime = new Date().toISOString();
+      const sendTime = new Date().toISOString();
       await this.store.updateSession(championId, {
-        lastUsed: turnStartTime,
+        lastUsed: sendTime,
         status: 'active',
         codexTurnInProgress: true,
         lastTurnStatus: undefined,
@@ -107,50 +107,22 @@ export class SessionManager {
         });
       } catch (error: unknown) {
         if (error instanceof Error) {
-          const latestSession = await this.store.getSession(championId);
-          if (latestSession?.cli === 'codex' && latestSession.codexTurnInProgress === true) {
-            await this.store.updateSession(championId, {
-              codexTurnInProgress: false,
-              lastTurnStatus: 'failed',
-              lastTurnError: error.message,
-              lastUsed: new Date().toISOString()
-            });
-          }
+          await this.store.updateSession(championId, {
+            codexTurnInProgress: false,
+            lastTurnStatus: 'failed',
+            lastTurnError: error.message,
+            lastUsed: new Date().toISOString()
+          });
         }
 
         throw error;
       }
 
-      const nextAssistantMessages =
-        sendResult.assistantMessage.length > 0
-          ? [...(session.lastAssistantMessages ?? []), sendResult.assistantMessage]
-          : [...(session.lastAssistantMessages ?? [])];
-      const completionTime = new Date().toISOString();
-      const turnStillInProgress = sendResult.timedOut;
-
       await this.store.updateSession(championId, {
         internalId: sendResult.threadId,
         appServerPid: sendResult.appServerPid,
-        appServerPort: sendResult.appServerPort,
-        lastUsed: completionTime,
-        status: 'active',
-        codexTurnInProgress: turnStillInProgress,
-        codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
-        lastTurnStatus: sendResult.status,
-        lastTurnError: sendResult.errorMessage,
-        lastAssistantMessages: nextAssistantMessages
+        appServerPort: sendResult.appServerPort
       });
-
-      if (sendResult.timedOut || sendResult.status === 'interrupted') {
-        throw new Error(sendResult.errorMessage ?? `Codex turn timed out for ${championId}`);
-      }
-
-      if (sendResult.status === 'failed') {
-        const messageText = sendResult.errorMessage
-          ? `Codex turn failed: ${sendResult.errorMessage}`
-          : 'Codex turn failed';
-        throw new Error(messageText);
-      }
 
       return;
     }
@@ -202,17 +174,30 @@ export class SessionManager {
   async listSessions(): Promise<StoredSession[]> {
     const sessions = (await this.store.listSessions()).filter((session) => session.status === 'active');
     const livenessChecks = await Promise.all(
-      sessions.map(async (session) => ({
-        championId: session.championId,
-        exists:
-          session.cli === 'codex'
-            ? await this.codexBackend.sessionExists(session.championId, session.appServerPid, session.appServerPort)
-            : await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId))
-      }))
+      sessions.map(async (session) => {
+        if (session.cli === 'codex') {
+          const exists = await this.codexBackend.sessionExists(
+            session.championId,
+            session.appServerPid,
+            session.appServerPort,
+            session.internalId
+          );
+          return { championId: session.championId, liveness: exists ? 'alive' : 'dead' as const };
+        } else {
+          const liveness = await this.claudeBackend.sessionExists(toTmuxSessionName(session.championId));
+          return { championId: session.championId, liveness };
+        }
+      })
     );
 
+    for (const check of livenessChecks) {
+      if (check.liveness === 'unknown') {
+        console.warn(`[dev-sessions] tmux returned an unexpected error for session ${check.championId}; keeping session record`);
+      }
+    }
+
     const deadSessions = sessions.filter((session) =>
-      livenessChecks.some((check) => check.championId === session.championId && !check.exists)
+      livenessChecks.some((check) => check.championId === session.championId && check.liveness === 'dead')
     );
     const deadCodexSessionIds = deadSessions
       .filter((session) => session.cli === 'codex')
@@ -249,7 +234,7 @@ export class SessionManager {
         return sessionMessages.slice(-safeCount);
       }
 
-      return this.codexBackend.getLastAssistantMessages(championId, safeCount);
+      return await this.codexBackend.getLastAssistantMessages(championId, session.internalId, safeCount);
     }
 
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
@@ -268,6 +253,21 @@ export class SessionManager {
       }
 
       if (session.lastTurnStatus === 'failed') {
+        // Re-check live thread status — cached 'failed' may be stale (e.g. from a previous bug)
+        let liveStatus: Awaited<ReturnType<typeof this.codexBackend.getThreadRuntimeStatus>>;
+        try {
+          liveStatus = await this.codexBackend.getThreadRuntimeStatus(session.internalId);
+        } catch {
+          liveStatus = 'unknown';
+        }
+        if (liveStatus === 'active') {
+          return 'working';
+        }
+        if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
+          await this.store.updateSession(championId, { lastTurnStatus: 'completed', lastTurnError: undefined });
+          return 'idle';
+        }
+        // Truly failed, unknown, or couldn't connect — report cached error
         const suffix = session.lastTurnError ? `: ${session.lastTurnError}` : '';
         throw new Error(`Codex turn failed${suffix}`);
       }
@@ -286,14 +286,27 @@ export class SessionManager {
 
     if (session.cli === 'codex') {
       const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
-      const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
-      const startTime = Date.now();
 
       if (!session.codexTurnInProgress && session.lastTurnStatus === 'failed') {
-        const message = session.lastTurnError
-          ? `Codex turn failed: ${session.lastTurnError}`
-          : 'Codex turn failed';
-        throw new Error(message);
+        // Re-check live thread status before giving up — cached 'failed' may be stale
+        let liveStatus: Awaited<ReturnType<typeof this.codexBackend.getThreadRuntimeStatus>>;
+        try {
+          liveStatus = await this.codexBackend.getThreadRuntimeStatus(session.internalId);
+        } catch {
+          liveStatus = 'unknown';
+        }
+        if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
+          await this.store.updateSession(championId, { lastTurnStatus: 'completed', lastTurnError: undefined });
+          return { completed: true, timedOut: false, elapsedMs: 0 };
+        }
+        if (liveStatus !== 'active') {
+          // Couldn't determine live status or truly failed — report cached error
+          const message = session.lastTurnError
+            ? `Codex turn failed: ${session.lastTurnError}`
+            : 'Codex turn failed';
+          throw new Error(message);
+        }
+        // Thread is active — fall through to waitForThread below
       }
 
       await this.store.updateSession(championId, {
@@ -316,36 +329,44 @@ export class SessionManager {
         };
       }
 
-      const deadline = startTime + timeoutMs;
-
-      while (Date.now() <= deadline) {
-        const latestSession = await this.requireSession(championId);
-        if (latestSession.cli !== 'codex') {
-          throw new Error(`Session ${championId} is no longer a Codex session`);
-        }
-
-        if (!latestSession.codexTurnInProgress) {
-          if (latestSession.lastTurnStatus === 'failed') {
-            const message = latestSession.lastTurnError
-              ? `Codex turn failed: ${latestSession.lastTurnError}`
-              : 'Codex turn failed';
-            throw new Error(message);
+      let waitResult: Awaited<ReturnType<CodexAppServerBackend['waitForThread']>>;
+      try {
+        waitResult = await this.codexBackend.waitForThread(championId, session.internalId, timeoutMs);
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          const latestSession = await this.store.getSession(championId);
+          if (latestSession?.cli === 'codex' && latestSession.codexTurnInProgress === true) {
+            await this.store.updateSession(championId, {
+              codexTurnInProgress: false,
+              lastTurnStatus: 'failed',
+              lastTurnError: error.message,
+              lastUsed: new Date().toISOString()
+            });
           }
-
-          return {
-            completed: latestSession.lastTurnStatus !== 'interrupted',
-            timedOut: latestSession.lastTurnStatus === 'interrupted',
-            elapsedMs: Date.now() - startTime
-          };
         }
 
-        await this.sleep(intervalMs);
+        throw error;
+      }
+
+      const completionTime = new Date().toISOString();
+      const turnStillInProgress = waitResult.timedOut;
+      await this.store.updateSession(championId, {
+        lastUsed: completionTime,
+        codexTurnInProgress: turnStillInProgress,
+        codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
+        lastTurnStatus: waitResult.status,
+        lastTurnError: waitResult.errorMessage
+      });
+
+      if (waitResult.status === 'failed') {
+        const message = waitResult.errorMessage ? `Codex turn failed: ${waitResult.errorMessage}` : 'Codex turn failed';
+        throw new Error(message);
       }
 
       return {
-        completed: false,
-        timedOut: true,
-        elapsedMs: Date.now() - startTime
+        completed: !waitResult.timedOut && waitResult.status !== 'interrupted',
+        timedOut: waitResult.timedOut || waitResult.status === 'interrupted',
+        elapsedMs: waitResult.elapsedMs
       };
     }
 
@@ -448,7 +469,7 @@ export class SessionManager {
         continue;
       }
 
-      if (await this.claudeBackend.sessionExists(toTmuxSessionName(candidate))) {
+      if ((await this.claudeBackend.sessionExists(toTmuxSessionName(candidate))) === 'alive') {
         continue;
       }
 

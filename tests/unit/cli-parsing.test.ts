@@ -65,6 +65,7 @@ function createInstallSkillDependencies(options: {
   cwd?: string;
   existingPaths?: string[];
   skillContent?: string;
+  skillNames?: string[];
 } = {}): {
   dependencies: BuildProgramDependencies;
   mocks: {
@@ -72,21 +73,25 @@ function createInstallSkillDependencies(options: {
     mkdir: ReturnType<typeof vi.fn>;
     readFile: ReturnType<typeof vi.fn>;
     writeFile: ReturnType<typeof vi.fn>;
+    listDirectory: ReturnType<typeof vi.fn>;
   };
 } {
   const homeDir = options.homeDir ?? '/mock/home';
   const cwd = options.cwd ?? '/mock/workspace';
   const existingPaths = new Set(options.existingPaths ?? []);
-  const skillContent = options.skillContent ?? '# dev-sessions skill';
+  const skillContent = options.skillContent ?? '# mock skill';
+  const skillNames = options.skillNames ?? ['dev-sessions'];
   const pathExists = vi.fn(async (candidatePath: string): Promise<boolean> => existingPaths.has(candidatePath));
   const mkdir = vi.fn().mockResolvedValue(undefined);
   const readFile = vi.fn().mockResolvedValue(skillContent);
   const writeFile = vi.fn().mockResolvedValue(undefined);
+  const listDirectory = vi.fn().mockResolvedValue(skillNames);
 
   return {
     dependencies: {
       installSkill: {
-        skillSourcePath: () => '/mock/dev-sessions/skill/SKILL.md',
+        skillsDirectory: () => '/mock/dev-sessions/skills',
+        listDirectory,
         cwd: () => cwd,
         homedir: () => homeDir,
         pathExists,
@@ -99,7 +104,8 @@ function createInstallSkillDependencies(options: {
       pathExists,
       mkdir,
       readFile,
-      writeFile
+      writeFile,
+      listDirectory
     }
   };
 }
@@ -280,9 +286,9 @@ describe('CLI argument parsing', () => {
 
     const expectedDir = path.join(homeDir, '.claude', 'skills', 'dev-sessions');
     const expectedFile = path.join(expectedDir, 'SKILL.md');
-    expect(mocks.readFile).toHaveBeenCalledWith('/mock/dev-sessions/skill/SKILL.md', 'utf8');
+    expect(mocks.readFile).toHaveBeenCalledWith('/mock/dev-sessions/skills/dev-sessions/SKILL.md', 'utf8');
     expect(mocks.mkdir).toHaveBeenCalledWith(expectedDir, { recursive: true });
-    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# dev-sessions skill', 'utf8');
+    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# mock skill', 'utf8');
     expect(mocks.pathExists).not.toHaveBeenCalled();
   });
 
@@ -298,7 +304,7 @@ describe('CLI argument parsing', () => {
     const expectedDir = path.join(cwd, '.codex', 'skills', 'dev-sessions');
     const expectedFile = path.join(expectedDir, 'SKILL.md');
     expect(mocks.mkdir).toHaveBeenCalledWith(expectedDir, { recursive: true });
-    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# dev-sessions skill', 'utf8');
+    expect(mocks.writeFile).toHaveBeenCalledWith(expectedFile, '# mock skill', 'utf8');
   });
 
   it('auto-detects Claude when only ~/.claude exists', async () => {
@@ -319,7 +325,7 @@ describe('CLI argument parsing', () => {
     expect(mocks.writeFile).toHaveBeenCalledTimes(1);
     expect(mocks.writeFile).toHaveBeenCalledWith(
       path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
-      '# dev-sessions skill',
+      '# mock skill',
       'utf8'
     );
   });
@@ -340,7 +346,7 @@ describe('CLI argument parsing', () => {
     expect(mocks.writeFile).toHaveBeenCalledTimes(1);
     expect(mocks.writeFile).toHaveBeenCalledWith(
       path.join(homeDir, '.codex', 'skills', 'dev-sessions', 'SKILL.md'),
-      '# dev-sessions skill',
+      '# mock skill',
       'utf8'
     );
   });
@@ -360,12 +366,12 @@ describe('CLI argument parsing', () => {
     expect(mocks.writeFile).toHaveBeenCalledTimes(2);
     expect(mocks.writeFile).toHaveBeenCalledWith(
       path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
-      '# dev-sessions skill',
+      '# mock skill',
       'utf8'
     );
     expect(mocks.writeFile).toHaveBeenCalledWith(
       path.join(homeDir, '.codex', 'skills', 'dev-sessions', 'SKILL.md'),
-      '# dev-sessions skill',
+      '# mock skill',
       'utf8'
     );
   });
@@ -383,7 +389,61 @@ describe('CLI argument parsing', () => {
     expect(mocks.writeFile).toHaveBeenCalledTimes(1);
     expect(mocks.writeFile).toHaveBeenCalledWith(
       path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
-      '# dev-sessions skill',
+      '# mock skill',
+      'utf8'
+    );
+  });
+
+  it('installs all skills when multiple skill directories exist', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const homeDir = '/home/test-user';
+    const { dependencies, mocks } = createInstallSkillDependencies({
+      homeDir,
+      skillNames: ['dev-sessions', 'handoff']
+    });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill', '--global', '--claude']);
+
+    expect(mocks.listDirectory).toHaveBeenCalledWith('/mock/dev-sessions/skills');
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'dev-sessions', 'SKILL.md'),
+      '# mock skill',
+      'utf8'
+    );
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'handoff', 'SKILL.md'),
+      '# mock skill',
+      'utf8'
+    );
+    expect(output.stdout).toContain('dev-sessions');
+    expect(output.stdout).toContain('handoff');
+  });
+
+  it('installs all skills for all targets when multiple skills and targets exist', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const homeDir = '/home/test-user';
+    const { dependencies, mocks } = createInstallSkillDependencies({
+      homeDir,
+      skillNames: ['dev-sessions', 'handoff']
+    });
+    const program = buildProgram(manager, io, dependencies);
+
+    await program.parseAsync(['node', 'dev-sessions', 'install-skill', '--global', '--claude', '--codex']);
+
+    // 2 skills × 2 targets = 4 writes
+    expect(mocks.writeFile).toHaveBeenCalledTimes(4);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'skills', 'handoff', 'SKILL.md'),
+      '# mock skill',
+      'utf8'
+    );
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      path.join(homeDir, '.codex', 'skills', 'handoff', 'SKILL.md'),
+      '# mock skill',
       'utf8'
     );
   });

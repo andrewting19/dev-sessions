@@ -167,35 +167,42 @@ describe('CodexAppServerBackend', () => {
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start']);
   });
 
-  it('resumes a thread and accumulates the assistant message for session history', async () => {
+  it('resumes a thread and fires turn/start without blocking on completion', async () => {
     const { backend, clients } = createHarness([
       {
         onRequest: (method) => {
           if (method === 'thread/start') {
-            return {
-              thread: {
-                id: 'thr_seed'
-              }
-            };
+            return { thread: { id: 'thr_seed' } };
           }
-
           return {};
         }
       },
       {
-        currentTurnText: 'Done here',
-        waitResult: {
-          completed: true,
-          timedOut: false,
-          elapsedMs: 42,
-          status: 'completed'
-        },
         onRequest: (method) => {
           if (method === 'thread/resume' || method === 'turn/start') {
             return {};
           }
-
           throw new Error(`Unexpected method: ${method}`);
+        }
+      },
+      {
+        onRequest: (method, params) => {
+          if (method !== 'thread/read') {
+            throw new Error(`Unexpected method: ${method}`);
+          }
+          expect(params).toEqual({ threadId: 'thr_seed', includeTurns: true });
+          return {
+            thread: {
+              turns: [
+                {
+                  items: [
+                    { type: 'userMessage', id: 'item-1', content: [] },
+                    { type: 'agentMessage', id: 'item-2', text: 'Done here' }
+                  ]
+                }
+              ]
+            }
+          };
         }
       }
     ]);
@@ -206,16 +213,80 @@ describe('CodexAppServerBackend', () => {
       model: 'gpt-5.3-codex'
     });
 
-    expect(sendResult).toMatchObject({
+    expect(sendResult).toEqual({
       threadId: 'thr_seed',
-      completed: true,
-      timedOut: false,
-      status: 'completed',
-      assistantMessage: 'Done here'
+      appServerPid: 9001,
+      appServerPort: 4510
     });
     expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'turn/start']);
-    expect(backend.getLastAssistantMessages('riven-jg', 1)).toEqual(['Done here']);
+    // getLastAssistantMessages reads from thread/read, not from send result
+    await expect(backend.getLastAssistantMessages('riven-jg', created.threadId, 1)).resolves.toEqual(['Done here']);
+    expect(clients[2].requests.map((entry) => entry.method)).toEqual(['thread/read']);
+    // getSessionStatus returns idle since no lastTurnStatus set by fire-and-forget send
     expect(backend.getSessionStatus('riven-jg')).toBe('idle');
+  });
+
+  it('reads assistant messages from thread/read even when in-memory history is empty', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method, params) => {
+          if (method !== 'thread/read') {
+            throw new Error(`Unexpected method: ${method}`);
+          }
+
+          expect(params).toEqual({
+            threadId: 'thr_history',
+            includeTurns: true
+          });
+
+          return {
+            thread: {
+              turns: [
+                {
+                  items: [
+                    { type: 'userMessage', id: 'item-1', content: [] },
+                    { type: 'agentMessage', id: 'item-2', text: 'first reply' }
+                  ]
+                },
+                {
+                  items: [
+                    { type: 'agentMessage', id: 'item-3', text: 'commentary block', phase: 'commentary' },
+                    { type: 'agentMessage', id: 'item-4', text: 'final reply', phase: 'final_answer' }
+                  ]
+                }
+              ]
+            }
+          };
+        }
+      }
+    ]);
+
+    await expect(backend.getLastAssistantMessages('jinx-bot', 'thr_history', 2)).resolves.toEqual([
+      'commentary block',
+      'final reply'
+    ]);
+
+    expect(clients).toHaveLength(1);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/read']);
+  });
+
+  it('returns no assistant messages when thread/read includeTurns is unavailable before first user message', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method !== 'thread/read') {
+            throw new Error(`Unexpected method: ${method}`);
+          }
+
+          throw new Error(
+            'thread/read failed: thread thr_new is not materialized yet; includeTurns is unavailable before first user message'
+          );
+        }
+      }
+    ]);
+
+    await expect(backend.getLastAssistantMessages('sona-sup', 'thr_new', 1)).resolves.toEqual([]);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/read']);
   });
 
   it('falls back to thread/start when thread/resume reports a missing thread', async () => {
@@ -256,7 +327,7 @@ describe('CodexAppServerBackend', () => {
     });
 
     expect(result.threadId).toBe('thr_fallback');
-    expect(result.status).toBe('completed');
+    expect(result.appServerPid).toBe(9001);
     expect(clients[0].requests.map((entry) => entry.method)).toEqual([
       'thread/resume',
       'thread/start',
@@ -264,8 +335,19 @@ describe('CodexAppServerBackend', () => {
     ]);
   });
 
-  it('captures failed turn completion and exposes failed status via helpers', async () => {
-    const { backend } = createHarness([
+  it('send returns fire-and-forget result; waitForThread surfaces failed turn', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/start') {
+            return { thread: { id: 'thr_failed' } };
+          }
+          if (method === 'turn/start') {
+            return {};
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      },
       {
         waitResult: {
           completed: true,
@@ -275,59 +357,102 @@ describe('CodexAppServerBackend', () => {
           errorMessage: 'tool execution failed'
         },
         onRequest: (method) => {
-          if (method === 'thread/start' || method === 'turn/start') {
-            if (method === 'thread/start') {
-              return {
-                thread: {
-                  id: 'thr_failed'
-                }
-              };
-            }
-            return {};
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_failed', status: { type: 'active', activeFlags: [] } } };
           }
-
           throw new Error(`Unexpected method: ${method}`);
         }
       }
     ]);
 
-    const result = await backend.sendMessage('ahri-mid', '', 'Break intentionally', {
+    const sendResult = await backend.sendMessage('ahri-mid', '', 'Break intentionally', {
       workspacePath: '/tmp/repo'
     });
+    expect(sendResult).toEqual({ threadId: 'thr_failed', appServerPid: 9001, appServerPort: 4510 });
+    // getSessionStatus returns idle after send (no lastTurnStatus set yet)
+    expect(backend.getSessionStatus('ahri-mid')).toBe('idle');
 
-    expect(result.status).toBe('failed');
-    expect(result.errorMessage).toBe('tool execution failed');
-    expect(() => backend.getSessionStatus('ahri-mid')).toThrow('Codex turn failed: tool execution failed');
-
-    const waitResult = await backend.waitForTurn('ahri-mid', 2_000);
-    expect(waitResult).toMatchObject({
-      completed: true,
-      timedOut: false,
-      status: 'failed',
-      errorMessage: 'tool execution failed'
-    });
+    // waitForThread surfaces the failure
+    const waitResult = await backend.waitForThread('ahri-mid', 'thr_failed', 2_000);
+    expect(waitResult).toMatchObject({ completed: true, timedOut: false, status: 'failed', errorMessage: 'tool execution failed' });
+    expect(clients[0].requests.map((e) => e.method)).toEqual(['thread/start', 'turn/start']);
+    expect(clients[1].requests.map((e) => e.method)).toEqual(['thread/resume']);
   });
 
-  it('returns timedOut when waitForTurnCompletion reports a timeout', async () => {
-    const { backend } = createHarness([
+  it('reconnects and waits for an active thread turn via thread/resume', async () => {
+    const { backend, clients } = createHarness([
       {
         waitResult: {
-          completed: false,
-          timedOut: true,
-          elapsedMs: 25,
-          status: 'interrupted',
-          errorMessage: 'Timed out waiting for Codex turn completion'
+          completed: true,
+          timedOut: false,
+          elapsedMs: 17,
+          status: 'completed'
         },
         onRequest: (method) => {
-          if (method === 'thread/start') {
+          if (method === 'thread/resume') {
             return {
               thread: {
-                id: 'thr_timeout'
+                id: 'thr_active',
+                status: {
+                  type: 'active',
+                  activeFlags: []
+                }
               }
             };
           }
 
-          if (method === 'turn/start') {
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('zed-mid', 'thr_active', 5_000);
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed'
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
+  it('returns immediately when thread/resume shows no active turn', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_idle',
+                status: {
+                  type: 'idle'
+                }
+              }
+            };
+          }
+
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('orianna-mid', 'thr_idle', 5_000);
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      elapsedMs: 0,
+      status: 'completed'
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
+  it('treats unknown runtime status as completed (idle thread)', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            // thread/resume returns no thread status field — results in 'unknown'
             return {};
           }
 
@@ -336,17 +461,51 @@ describe('CodexAppServerBackend', () => {
       }
     ]);
 
-    const sendResult = await backend.sendMessage('teemo-sup', '', 'This should time out', {
-      workspacePath: '/tmp/repo',
-      timeoutMs: 25
-    });
+    const result = await backend.waitForThread('karma-sup', 'thr_unknown', 5_000);
 
-    expect(sendResult).toMatchObject({
-      completed: false,
-      timedOut: true,
-      status: 'interrupted'
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      elapsedMs: 0,
+      status: 'completed'
     });
-    expect(backend.getSessionStatus('teemo-sup')).toBe('working');
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
+  it('checks thread/list for specific Codex thread existence', async () => {
+    const threadListScript = {
+      onRequest: (method: string, params: unknown) => {
+        if (method !== 'thread/list') {
+          throw new Error(`Unexpected method: ${method}`);
+        }
+
+        const cursor = (params as { cursor?: string } | undefined)?.cursor;
+        if (!cursor) {
+          return {
+            data: [{ id: 'thr_other' }],
+            nextCursor: 'page-2'
+          };
+        }
+
+        return {
+          data: [{ id: 'thr_target' }],
+          nextCursor: null
+        };
+      }
+    } satisfies FakeClientScript;
+
+    const { backend, daemon, clients } = createHarness([threadListScript, threadListScript]);
+
+    await expect(
+      backend.sessionExists('fizz-top', daemon.server.pid, daemon.server.port, 'thr_target')
+    ).resolves.toBe(true);
+    await expect(
+      backend.sessionExists('fizz-top', daemon.server.pid, daemon.server.port, 'thr_missing')
+    ).resolves.toBe(false);
+
+    expect(clients).toHaveLength(2);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/list', 'thread/list']);
+    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/list', 'thread/list']);
   });
 
   it('archives threads on kill and delegates shared daemon lifecycle checks', async () => {

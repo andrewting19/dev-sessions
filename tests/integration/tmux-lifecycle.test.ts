@@ -76,21 +76,21 @@ describeIfTmux('tmux lifecycle integration', () => {
   );
 
   it(
-    'returns true for existing sessions and false for missing sessions',
+    'returns alive for existing sessions and dead for missing sessions',
     async () => {
       const sessionName = createSessionName('exists');
 
-      expect(await backend.sessionExists(sessionName)).toBe(false);
+      expect(await backend.sessionExists(sessionName)).toBe('dead');
 
       const createResult = await runTmux(['new-session', '-d', '-s', sessionName, '-n', sessionName, 'sleep 999']);
       expect(createResult.code).toBe(0);
 
-      expect(await backend.sessionExists(sessionName)).toBe(true);
+      expect(await backend.sessionExists(sessionName)).toBe('alive');
 
       const killResult = await runTmux(['kill-session', '-t', sessionName]);
       expect(killResult.code).toBe(0);
 
-      expect(await backend.sessionExists(sessionName)).toBe(false);
+      expect(await backend.sessionExists(sessionName)).toBe('dead');
     },
     20_000
   );

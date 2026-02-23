@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { getClaudeTranscriptPath } from '../transcript/claude-parser';
 import { SessionMode } from '../types';
 
 const execFileAsync = promisify(execFile);
@@ -48,6 +50,8 @@ export class ClaudeTmuxBackend {
     if (mode === 'docker') {
       await this.sleep(5000);
       await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+    } else {
+      await this.waitForTranscriptReady(workspacePath, sessionUuid);
     }
   }
 
@@ -100,12 +104,18 @@ export class ClaudeTmuxBackend {
     }
   }
 
-  async sessionExists(tmuxSessionName: string): Promise<boolean> {
+  async sessionExists(tmuxSessionName: string): Promise<'alive' | 'dead' | 'unknown'> {
     try {
       await this.execTmux(['has-session', '-t', tmuxSessionName]);
-      return true;
-    } catch {
-      return false;
+      return 'alive';
+    } catch (error: unknown) {
+      if (
+        error instanceof Error &&
+        /can't find session|session not found/i.test(error.message)
+      ) {
+        return 'dead';
+      }
+      return 'unknown';
     }
   }
 
@@ -177,6 +187,31 @@ export class ClaudeTmuxBackend {
     }
 
     return `cd ${shellEscape(workspacePath)} && ${commandParts.join(' ')}`;
+  }
+
+  private async waitForTranscriptReady(
+    workspacePath: string,
+    sessionUuid: string,
+    pollIntervalMs: number = 200
+  ): Promise<void> {
+    const transcriptPath = getClaudeTranscriptPath(workspacePath, sessionUuid);
+    const deadline = Date.now() + this.timeoutMs;
+
+    while (Date.now() < deadline) {
+      try {
+        await access(transcriptPath);
+        return;
+      } catch {
+        // File not yet created; keep polling.
+      }
+
+      await this.sleep(pollIntervalMs);
+    }
+
+    console.warn(
+      `[dev-sessions] Timed out waiting for Claude transcript at ${transcriptPath}. ` +
+      'Claude may not be ready to accept input yet.'
+    );
   }
 
   private async execTmux(args: string[]): Promise<string> {

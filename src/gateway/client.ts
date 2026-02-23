@@ -192,7 +192,17 @@ export class GatewaySessionManager {
     }
 
     const rawBody = await response.text();
-    const payload = rawBody.length > 0 ? JSON.parse(rawBody) as Record<string, unknown> : {};
+    let payload: Record<string, unknown> = {};
+    if (rawBody.length > 0) {
+      try {
+        payload = JSON.parse(rawBody) as Record<string, unknown>;
+      } catch {
+        const preview = rawBody.slice(0, 200);
+        throw new Error(
+          `Gateway returned non-JSON response (status=${response.status}, url=${requestUrl}): ${preview}`
+        );
+      }
+    }
 
     if (!response.ok) {
       const errorMessage =

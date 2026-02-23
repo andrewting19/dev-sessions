@@ -70,12 +70,10 @@ export interface CodexTurnWaitResult {
 export interface CodexSendMessageOptions {
   workspacePath: string;
   model?: string;
-  timeoutMs?: number;
 }
 
-export interface CodexTurnSendResult extends CodexTurnWaitResult {
+export interface CodexSendResult {
   threadId: string;
-  assistantMessage: string;
   appServerPid: number;
   appServerPort: number;
 }
@@ -113,6 +111,7 @@ const PORT_POLL_INTERVAL_MS = 100;
 const CLOSE_TIMEOUT_MS = 500;
 const STATE_FILE_VERSION = 1;
 const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not found/i;
+const THREAD_READ_UNMATERIALIZED_PATTERN = /includeTurns is unavailable before first user message/i;
 const APP_SERVER_URL_PATTERN = /ws:\/\/127\.0\.0\.1:(\d+)/i;
 
 function defaultSpawnCodexDaemon(args: string[], options: Parameters<typeof spawn>[2]): ChildProcess {
@@ -743,6 +742,67 @@ function extractThreadId(result: unknown): string {
   return threadId;
 }
 
+// ThreadStatus uses #[serde(tag = "type", rename_all = "camelCase")]:
+//   { "type": "idle" } | { "type": "notLoaded" } | { "type": "systemError" } | { "type": "active", "activeFlags": [...] }
+// Older Codex versions omit the status field entirely — treat absent status as idle.
+function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown' {
+  const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
+  if (!thread || !('status' in thread)) {
+    // Old Codex version without Thread.status field — assume idle
+    return 'idle';
+  }
+  const status = thread.status as { type?: unknown } | undefined;
+  const type = status?.type;
+  if (type === 'active' || type === 'idle' || type === 'systemError' || type === 'notLoaded') {
+    return type;
+  }
+  return 'unknown';
+}
+
+function extractThreadListPage(result: unknown): { threadIds: string[]; nextCursor?: string } {
+  if (!result || typeof result !== 'object') {
+    throw new Error('thread/list returned an invalid response');
+  }
+  const record = result as Record<string, unknown>;
+  if (!Array.isArray(record.data)) {
+    throw new Error('thread/list response is missing result.data');
+  }
+  const threadIds = (record.data as unknown[])
+    .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).id : undefined))
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+  const nextCursor =
+    typeof record.nextCursor === 'string' && record.nextCursor.length > 0 ? record.nextCursor : undefined;
+  return { threadIds, nextCursor };
+}
+
+function extractThreadReadAssistantMessages(result: unknown): string[] {
+  if (!result || typeof result !== 'object') {
+    throw new Error('thread/read returned an invalid response');
+  }
+  const thread = (result as Record<string, unknown>).thread;
+  if (!thread || typeof thread !== 'object') {
+    throw new Error('thread/read response is missing result.thread');
+  }
+  const turns = (thread as Record<string, unknown>).turns;
+  if (!Array.isArray(turns)) {
+    throw new Error('thread/read response is missing result.thread.turns');
+  }
+  const messages: string[] = [];
+  for (const turn of turns as unknown[]) {
+    if (!turn || typeof turn !== 'object') continue;
+    const items = (turn as Record<string, unknown>).items;
+    if (!Array.isArray(items)) continue;
+    for (const item of items as unknown[]) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      if (rec.type === 'agentMessage' && typeof rec.text === 'string' && rec.text.length > 0) {
+        messages.push(rec.text);
+      }
+    }
+  }
+  return messages;
+}
+
 function extractDeltaText(params: unknown): string {
   if (!params || typeof params !== 'object') {
     return '';
@@ -853,22 +913,21 @@ export class CodexAppServerBackend {
     threadId: string,
     message: string,
     options?: CodexSendMessageOptions
-  ): Promise<CodexTurnSendResult> {
+  ): Promise<CodexSendResult> {
     if (!options || options.workspacePath.trim().length === 0) {
       throw new Error('Codex workspace path is required to send a message');
     }
 
-    const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const model = options.model ?? DEFAULT_MODEL;
-    const state = this.ensureSessionState(championId);
+    this.ensureSessionState(championId);
 
-    const { server, result } = await this.withConnectedClient(async (client) => {
-      let activeThreadId = threadId.trim();
+    const { server, result: activeThreadId } = await this.withConnectedClient(async (client) => {
+      let tid = threadId.trim();
 
-      if (activeThreadId.length > 0) {
+      if (tid.length > 0) {
         try {
           await client.request('thread/resume', {
-            threadId: activeThreadId,
+            threadId: tid,
             cwd: options.workspacePath,
             model,
             approvalPolicy: 'never',
@@ -880,11 +939,11 @@ export class CodexAppServerBackend {
             throw error;
           }
 
-          activeThreadId = '';
+          tid = '';
         }
       }
 
-      if (activeThreadId.length === 0) {
+      if (tid.length === 0) {
         const threadResult = await client.request('thread/start', {
           model,
           cwd: options.workspacePath,
@@ -894,36 +953,74 @@ export class CodexAppServerBackend {
           persistExtendedHistory: true,
           experimentalRawEvents: false
         });
-        activeThreadId = extractThreadId(threadResult);
+        tid = extractThreadId(threadResult);
       }
 
       await client.request('turn/start', {
-        threadId: activeThreadId,
+        threadId: tid,
         input: [{ type: 'text', text: message }]
       });
 
-      const waitResult = await client.waitForTurnCompletion(timeoutMs);
-      return {
-        threadId: activeThreadId,
-        waitResult,
-        assistantMessage: client.currentTurnText
-      };
+      return tid;
     });
 
-    state.lastTurnStatus = result.waitResult.status;
-    state.lastTurnError = result.waitResult.errorMessage;
-
-    if (result.assistantMessage.length > 0) {
-      state.assistantHistory.push(result.assistantMessage);
-    }
-
     return {
-      ...result.waitResult,
-      threadId: result.threadId,
-      assistantMessage: result.assistantMessage,
+      threadId: activeThreadId,
       appServerPid: server.pid,
       appServerPort: server.port
     };
+  }
+
+  async getThreadRuntimeStatus(threadId: string): Promise<'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown'> {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return 'unknown';
+    }
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
+      return extractThreadRuntimeStatus(resumeResult);
+    });
+
+    return result;
+  }
+
+  async waitForThread(championId: string, threadId: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CodexTurnWaitResult> {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return { completed: true, timedOut: false, elapsedMs: 0, status: 'completed' };
+    }
+
+    const state = this.ensureSessionState(championId);
+    const safeTimeoutMs = Math.max(1, timeoutMs);
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
+      const runtimeStatus = extractThreadRuntimeStatus(resumeResult);
+
+      if (runtimeStatus === 'active') {
+        return client.waitForTurnCompletion(safeTimeoutMs);
+      }
+
+      if (runtimeStatus === 'systemError' || runtimeStatus === 'unknown') {
+        return {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 0,
+          status: 'failed' as const,
+          errorMessage:
+            runtimeStatus === 'systemError'
+              ? 'Codex thread is in systemError state'
+              : 'Unable to determine Codex thread runtime status'
+        };
+      }
+
+      return { completed: true, timedOut: false, elapsedMs: 0, status: 'completed' as const };
+    });
+
+    state.lastTurnStatus = result.status;
+    state.lastTurnError = result.errorMessage;
+    return result;
   }
 
   async waitForTurn(championId: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CodexTurnWaitResult> {
@@ -956,10 +1053,31 @@ export class CodexAppServerBackend {
     };
   }
 
-  getLastAssistantMessages(championId: string, count: number): string[] {
+  async getLastAssistantMessages(championId: string, threadId: string, count: number): Promise<string[]> {
     const state = this.ensureSessionState(championId);
     const safeCount = Math.max(1, count);
-    return state.assistantHistory.slice(-safeCount);
+    const normalizedThreadId = threadId.trim();
+
+    if (normalizedThreadId.length === 0) {
+      return state.assistantHistory.slice(-safeCount);
+    }
+
+    try {
+      const { result } = await this.withConnectedClient(async (client) => {
+        const readResult = await client.request('thread/read', {
+          threadId: normalizedThreadId,
+          includeTurns: true
+        });
+        return extractThreadReadAssistantMessages(readResult);
+      });
+      state.assistantHistory = result;
+      return result.slice(-safeCount);
+    } catch (error) {
+      if (this.isThreadReadUnmaterializedError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   getSessionStatus(championId: string): AgentTurnStatus {
@@ -1020,8 +1138,42 @@ export class CodexAppServerBackend {
     await this.daemonManager.stopServer();
   }
 
-  async sessionExists(_championId: string, pid?: number, port?: number): Promise<boolean> {
-    return this.daemonManager.isServerRunning(pid, port);
+  async sessionExists(_championId: string, pid?: number, port?: number, threadId?: string): Promise<boolean> {
+    if (!threadId || threadId.trim().length === 0) {
+      return this.daemonManager.isServerRunning(pid, port);
+    }
+
+    try {
+      const { result } = await this.withConnectedClient(async (client) => {
+        return this.threadExistsOnServer(client, threadId.trim());
+      });
+      return result;
+    } catch {
+      return false;
+    }
+  }
+
+  private async threadExistsOnServer(client: CodexRpcClient, threadId: string): Promise<boolean> {
+    let cursor: string | undefined;
+    const pageLimit = 100;
+
+    while (true) {
+      const listResult = await client.request('thread/list', {
+        cursor,
+        limit: pageLimit,
+        modelProviders: []
+      });
+      const page = extractThreadListPage(listResult);
+      if (page.threadIds.includes(threadId)) {
+        return true;
+      }
+
+      if (!page.nextCursor) {
+        return false;
+      }
+
+      cursor = page.nextCursor;
+    }
   }
 
   private ensureSessionState(championId: string): SessionState {
@@ -1093,5 +1245,13 @@ export class CodexAppServerBackend {
     }
 
     return RESUME_NOT_FOUND_PATTERN.test(error.message);
+  }
+
+  private isThreadReadUnmaterializedError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    return THREAD_READ_UNMATERIALIZED_PATTERN.test(error.message);
   }
 }

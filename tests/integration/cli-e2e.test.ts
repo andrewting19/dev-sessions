@@ -208,7 +208,7 @@ describeIfTmux('CLI e2e integration', () => {
         'SKILL.md'
       );
       const installedContent = await readFile(destinationPath, 'utf8');
-      const sourceContent = await readFile(path.resolve('skill', 'SKILL.md'), 'utf8');
+      const sourceContent = await readFile(path.resolve('skills', 'dev-sessions', 'SKILL.md'), 'utf8');
 
       expect(installedContent).toBe(sourceContent);
     },

@@ -3,12 +3,17 @@ import { ClaudeTmuxBackend } from '../../src/backends/claude-tmux';
 
 type ExecFileCallback = (error: NodeJS.ErrnoException | null, stdout?: string, stderr?: string) => void;
 
-const { execFileMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn()
+const { execFileMock, accessMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
+  accessMock: vi.fn()
 }));
 
 vi.mock('node:child_process', () => ({
   execFile: execFileMock
+}));
+
+vi.mock('node:fs/promises', () => ({
+  access: accessMock
 }));
 
 function mockExecFileSuccess(): void {
@@ -23,7 +28,10 @@ function mockExecFileSuccess(): void {
 describe('ClaudeTmuxBackend', () => {
   beforeEach(() => {
     execFileMock.mockReset();
+    accessMock.mockReset();
     mockExecFileSuccess();
+    // Default: transcript file is immediately available.
+    accessMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -116,6 +124,74 @@ describe('ClaudeTmuxBackend', () => {
       expect.any(Object),
       expect.any(Function)
     );
+  });
+
+  it('polls for transcript file before returning from createSession (yolo)', async () => {
+    vi.useFakeTimers();
+
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    // Fail twice then succeed.
+    accessMock
+      .mockRejectedValueOnce(enoent)
+      .mockRejectedValueOnce(enoent)
+      .mockResolvedValue(undefined);
+
+    const backend = new ClaudeTmuxBackend();
+    const createPromise = backend.createSession('dev-fizz-top', '/tmp/workspace', 'yolo', 'uuid-poll');
+
+    // Advance past two 200ms poll intervals.
+    await vi.advanceTimersByTimeAsync(400);
+    await createPromise;
+
+    expect(accessMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('logs a warning and returns when transcript polling times out', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    accessMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+    const backend = new ClaudeTmuxBackend(500);
+    const createPromise = backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-timeout');
+
+    await vi.advanceTimersByTimeAsync(600);
+    await createPromise;
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Timed out waiting for Claude transcript'));
+    warnSpy.mockRestore();
+  });
+
+  describe('sessionExists tri-state', () => {
+    it('returns alive when tmux has-session succeeds', async () => {
+      const backend = new ClaudeTmuxBackend();
+      const result = await backend.sessionExists('dev-fizz-top');
+      expect(result).toBe('alive');
+    });
+
+    it("returns dead when tmux reports can't find session", async () => {
+      execFileMock.mockImplementation(
+        (_command: string, _args: string[], _options: unknown, callback: ExecFileCallback) => {
+          callback(Object.assign(new Error("can't find session: dev-fizz-top"), { code: 1 }));
+          return undefined;
+        }
+      );
+      const backend = new ClaudeTmuxBackend();
+      const result = await backend.sessionExists('dev-fizz-top');
+      expect(result).toBe('dead');
+    });
+
+    it('returns unknown when tmux returns an unexpected error', async () => {
+      execFileMock.mockImplementation(
+        (_command: string, _args: string[], _options: unknown, callback: ExecFileCallback) => {
+          callback(new Error('tmux: command not found'));
+          return undefined;
+        }
+      );
+      const backend = new ClaudeTmuxBackend();
+      const result = await backend.sessionExists('dev-fizz-top');
+      expect(result).toBe('unknown');
+    });
   });
 
   it('sends message text and enter keys in separate tmux commands', async () => {

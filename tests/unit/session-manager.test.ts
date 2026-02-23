@@ -1,9 +1,13 @@
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeTmuxBackend } from '../../src/backends/claude-tmux';
-import { CodexAppServerBackend, CodexTurnSendResult } from '../../src/backends/codex-appserver';
+import {
+  CodexAppServerBackend,
+  CodexSendResult,
+  CodexTurnWaitResult
+} from '../../src/backends/codex-appserver';
 import { toTmuxSessionName } from '../../src/champion-ids';
 import { SessionManager } from '../../src/session-manager';
 import { SessionStore } from '../../src/session-store';
@@ -53,8 +57,8 @@ class FakeClaudeBackend extends ClaudeTmuxBackend {
     this.liveSessions.delete(tmuxSessionName);
   }
 
-  override async sessionExists(tmuxSessionName: string): Promise<boolean> {
-    return this.liveSessions.has(tmuxSessionName);
+  override async sessionExists(tmuxSessionName: string): Promise<'alive' | 'dead' | 'unknown'> {
+    return this.liveSessions.has(tmuxSessionName) ? 'alive' : 'dead';
   }
 }
 
@@ -67,22 +71,27 @@ class FakeCodexBackend extends CodexAppServerBackend {
     options?: {
       workspacePath: string;
       model?: string;
-      timeoutMs?: number;
     };
   }> = [];
   readonly killCalls: Array<{ championId: string; pid?: number }> = [];
-  readonly sessionExistsCalls: Array<{ championId: string; pid?: number }> = [];
+  readonly sessionExistsCalls: Array<{ championId: string; pid?: number; port?: number; threadId?: string }> = [];
+  readonly waitForThreadCalls: Array<{ championId: string; threadId: string; timeoutMs: number }> = [];
+  readonly getLastAssistantMessagesCalls: Array<{ championId: string; threadId: string; count: number }> = [];
   readonly statuses = new Map<string, AgentTurnStatus>();
   readonly messages = new Map<string, string[]>();
   readonly liveSessions = new Set<string>();
-
-  nextSendResult: CodexTurnSendResult = {
-    threadId: 'thr_default',
+  nextWaitForThreadResult: CodexTurnWaitResult = {
     completed: true,
     timedOut: false,
     elapsedMs: 25,
-    status: 'completed',
-    assistantMessage: 'done'
+    status: 'completed'
+  };
+  nextWaitForThreadError?: Error;
+
+  nextSendResult: CodexSendResult = {
+    threadId: 'thr_default',
+    appServerPid: 9001,
+    appServerPort: 4510
   };
 
   constructor() {
@@ -115,9 +124,8 @@ class FakeCodexBackend extends CodexAppServerBackend {
     options?: {
       workspacePath: string;
       model?: string;
-      timeoutMs?: number;
     }
-  ): Promise<CodexTurnSendResult> {
+  ): Promise<CodexSendResult> {
     this.sendCalls.push({
       championId,
       threadId,
@@ -125,22 +133,14 @@ class FakeCodexBackend extends CodexAppServerBackend {
       options
     });
     const thread = this.nextSendResult.threadId === 'thr_default' ? threadId : this.nextSendResult.threadId;
-    const result = {
+    return {
       ...this.nextSendResult,
       threadId: thread
     };
-
-    this.statuses.set(championId, result.status === 'interrupted' ? 'working' : 'idle');
-    if (result.assistantMessage.length > 0) {
-      const values = this.messages.get(championId) ?? [];
-      values.push(result.assistantMessage);
-      this.messages.set(championId, values);
-    }
-
-    return result;
   }
 
-  override getLastAssistantMessages(championId: string, count: number): string[] {
+  override async getLastAssistantMessages(championId: string, threadId: string, count: number): Promise<string[]> {
+    this.getLastAssistantMessagesCalls.push({ championId, threadId, count });
     const values = this.messages.get(championId) ?? [];
     return values.slice(-Math.max(1, count));
   }
@@ -154,8 +154,25 @@ class FakeCodexBackend extends CodexAppServerBackend {
     this.liveSessions.delete(championId);
   }
 
-  override async sessionExists(championId: string, pid?: number): Promise<boolean> {
-    this.sessionExistsCalls.push({ championId, pid });
+  override async waitForThread(
+    championId: string,
+    threadId: string,
+    timeoutMs: number = 300_000
+  ): Promise<CodexTurnWaitResult> {
+    this.waitForThreadCalls.push({ championId, threadId, timeoutMs });
+    if (this.nextWaitForThreadError) {
+      const error = this.nextWaitForThreadError;
+      this.nextWaitForThreadError = undefined;
+      throw error;
+    }
+
+    const result = { ...this.nextWaitForThreadResult };
+    this.statuses.set(championId, result.status === 'interrupted' ? 'working' : 'idle');
+    return result;
+  }
+
+  override async sessionExists(championId: string, pid?: number, port?: number, threadId?: string): Promise<boolean> {
+    this.sessionExistsCalls.push({ championId, pid, port, threadId });
     return this.liveSessions.has(championId);
   }
 }
@@ -308,14 +325,6 @@ describe('SessionManager', () => {
       }
     ]);
 
-    codexBackend.nextSendResult = {
-      threadId: `thr_${session.championId}`,
-      completed: true,
-      timedOut: false,
-      elapsedMs: 77,
-      status: 'completed',
-      assistantMessage: 'second'
-    };
     await manager.sendMessage(session.championId, 'run lint');
     expect(codexBackend.sendCalls).toEqual([
       {
@@ -329,9 +338,10 @@ describe('SessionManager', () => {
       }
     ]);
 
-    expect(await manager.getLastAssistantTextBlocks(session.championId, 1)).toEqual(['second']);
+    // After non-blocking send, turn is in progress
+    expect(await manager.getSessionStatus(session.championId)).toBe('working');
 
-    expect(await manager.getSessionStatus(session.championId)).toBe('idle');
+    // Wait for turn to complete
     const waitResult = await manager.waitForSession(session.championId, {
       timeoutSeconds: 3
     });
@@ -339,37 +349,118 @@ describe('SessionManager', () => {
     expect(waitResult).toEqual({
       completed: true,
       timedOut: false,
-      elapsedMs: 0
+      elapsedMs: 25
     });
+
+    // After wait, status is idle
+    expect(await manager.getSessionStatus(session.championId)).toBe('idle');
+
+    // Set messages on backend for last-message fallback
+    codexBackend.messages.set(session.championId, ['second']);
+    expect(await manager.getLastAssistantTextBlocks(session.championId, 1)).toEqual(['second']);
 
     const stored = await store.getSession(session.championId);
     expect(stored?.lastTurnStatus).toBe('completed');
-    expect(stored?.lastAssistantMessages).toEqual(['second']);
+    expect(stored?.codexTurnInProgress).toBe(false);
   });
 
-  it('throws when codex turn fails', async () => {
+  it('uses the codex backend last-message fallback with the stored thread id when the session cache is empty', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-history-fallback'
+    });
+
+    codexBackend.messages.set(session.championId, ['older reply', 'newer reply']);
+    await store.updateSession(session.championId, {
+      lastAssistantMessages: []
+    });
+
+    await expect(manager.getLastAssistantTextBlocks(session.championId, 1)).resolves.toEqual(['newer reply']);
+    expect(codexBackend.getLastAssistantMessagesCalls).toEqual([
+      {
+        championId: session.championId,
+        threadId: session.internalId,
+        count: 1
+      }
+    ]);
+  });
+
+  it('reconnects on Codex wait when the store still shows a turn in progress', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-stale-wait'
+    });
+
+    await store.updateSession(session.championId, {
+      codexTurnInProgress: true,
+      lastTurnStatus: 'interrupted',
+      lastTurnError: 'Timed out waiting for Codex turn completion'
+    });
+
+    codexBackend.nextWaitForThreadResult = {
+      completed: true,
+      timedOut: false,
+      elapsedMs: 123,
+      status: 'completed'
+    };
+
+    const result = await manager.waitForSession(session.championId, {
+      timeoutSeconds: 4
+    });
+
+    expect(result).toEqual({
+      completed: true,
+      timedOut: false,
+      elapsedMs: 123
+    });
+    expect(codexBackend.waitForThreadCalls).toEqual([
+      {
+        championId: session.championId,
+        threadId: session.internalId,
+        timeoutMs: 4_000
+      }
+    ]);
+
+    const stored = await store.getSession(session.championId);
+    expect(stored?.codexTurnInProgress).toBe(false);
+    expect(stored?.lastTurnStatus).toBe('completed');
+    expect(stored?.lastTurnError).toBeUndefined();
+  });
+
+  it('throws when codex backend.sendMessage throws (connection error)', async () => {
     const session = await manager.createSession({
       cli: 'codex',
       path: '/tmp/codex-project'
     });
 
-    codexBackend.nextSendResult = {
-      threadId: session.internalId,
+    vi.spyOn(codexBackend, 'sendMessage').mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    await expect(manager.sendMessage(session.championId, 'run failing task')).rejects
+      .toThrow('ECONNREFUSED');
+
+    const stored = await store.getSession(session.championId);
+    expect(stored?.codexTurnInProgress).toBe(false);
+    expect(stored?.lastTurnStatus).toBe('failed');
+  });
+
+  it('throws when codex wait fails', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-project'
+    });
+
+    await manager.sendMessage(session.championId, 'run failing task');
+
+    codexBackend.nextWaitForThreadResult = {
       completed: true,
       timedOut: false,
       elapsedMs: 31,
       status: 'failed',
-      errorMessage: 'runtime error',
-      assistantMessage: ''
+      errorMessage: 'runtime error'
     };
 
-    await expect(manager.sendMessage(session.championId, 'run failing task')).rejects
-      .toThrow('Codex turn failed: runtime error');
-
     await expect(
-      manager.waitForSession(session.championId, {
-        timeoutSeconds: 2
-      })
+      manager.waitForSession(session.championId, { timeoutSeconds: 2 })
     ).rejects.toThrow('Codex turn failed: runtime error');
   });
 
@@ -417,19 +508,19 @@ describe('SessionManager', () => {
       'utf8'
     );
 
-    codexBackend.nextSendResult = {
-      threadId: codexSession.internalId,
-      completed: true,
-      timedOut: false,
-      elapsedMs: 21,
-      status: 'completed',
-      assistantMessage: 'Codex says hi'
-    };
     await manager.sendMessage(codexSession.championId, 'say hi');
+    await manager.waitForSession(codexSession.championId, { timeoutSeconds: 3 });
+    codexBackend.messages.set(codexSession.championId, ['Codex says hi']);
 
     const listed = await manager.listSessions();
     expect(listed.map((session) => session.championId).sort()).toEqual(
       [claudeSession.championId, codexSession.championId].sort()
+    );
+    expect(codexBackend.sessionExistsCalls).toContainEqual(
+      expect.objectContaining({
+        championId: codexSession.championId,
+        threadId: codexSession.internalId
+      })
     );
 
     expect(await manager.getSessionStatus(claudeSession.championId)).toBe('idle');
@@ -446,11 +537,29 @@ describe('SessionManager', () => {
     expect(codexBackend.killCalls).toEqual([
       {
         championId: codexSession.championId,
-        pid: undefined
+        pid: 9001
       }
     ]);
     expect(backend.killCalls).toEqual([toTmuxSessionName(claudeSession.championId)]);
     expect(await manager.listSessions()).toEqual([]);
+  });
+
+  it('preserves session record and logs a warning when sessionExists returns unknown', async () => {
+    class UnstableBackend extends FakeClaudeBackend {
+      override async sessionExists(): Promise<'alive' | 'dead' | 'unknown'> {
+        return 'unknown';
+      }
+    }
+
+    const unstableBackend = new UnstableBackend();
+    const unstableManager = new SessionManager(store, unstableBackend, new FakeCodexBackend());
+    const session = await unstableManager.createSession({ path: tmpDir });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const listed = await unstableManager.listSessions();
+    expect(listed.map((s) => s.championId)).toContain(session.championId);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(session.championId));
+    warnSpy.mockRestore();
   });
 
   it('throws session-not-found errors for unknown IDs', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "dev-sessions",
-  "version": "0.1.1",
+  "version": "0.2.2",
   "description": "CLI tool to spawn and manage coding agent sessions",
   "license": "MIT",
   "bin": {
@@ -8,7 +8,7 @@
   },
   "files": [
     "dist",
-    "skill/SKILL.md",
+    "skills/",
     "README.md"
   ],
   "scripts": {
