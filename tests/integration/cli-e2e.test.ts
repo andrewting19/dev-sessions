@@ -55,7 +55,8 @@ async function createContext(): Promise<CliTestContext> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: homeDir,
-    PATH: `${mockBinDir}${path.delimiter}${process.env.PATH ?? ''}`
+    PATH: `${mockBinDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS: '100'
   };
 
   return {

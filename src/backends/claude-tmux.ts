@@ -175,7 +175,9 @@ export class ClaudeTmuxBackend {
     pollIntervalMs: number = 200
   ): Promise<void> {
     const transcriptPath = getClaudeTranscriptPath(workspacePath, sessionUuid);
-    const deadline = Date.now() + this.timeoutMs;
+    const timeoutOverride = parseInt(process.env['DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS'] ?? '');
+    const timeoutMs = Number.isFinite(timeoutOverride) && timeoutOverride >= 0 ? timeoutOverride : this.timeoutMs;
+    const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
       try {

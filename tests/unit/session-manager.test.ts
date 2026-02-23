@@ -249,8 +249,8 @@ describe('SessionManager', () => {
     );
 
     const waitPromise = manager.waitForSession(session.championId, {
-      timeoutSeconds: 5,
-      intervalSeconds: 1
+      timeoutSeconds: 2,
+      intervalSeconds: 0.05
     });
 
     setTimeout(() => {
@@ -259,7 +259,7 @@ describe('SessionManager', () => {
         '\n{"type":"human","message":{"content":"new task"}}',
         'utf8'
       );
-    }, 200);
+    }, 20);
 
     setTimeout(() => {
       void appendFile(
@@ -267,13 +267,13 @@ describe('SessionManager', () => {
         '\n{"type":"assistant","message":{"content":[{"type":"text","text":"new done"}]}}',
         'utf8'
       );
-    }, 1200);
+    }, 120);
 
     const result = await waitPromise;
 
     expect(result.completed).toBe(true);
     expect(result.timedOut).toBe(false);
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(1800);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
   });
 
   it('returns immediately when latest user already has an assistant reply after last send timestamp', async () => {
@@ -482,13 +482,13 @@ describe('SessionManager', () => {
     );
 
     const waitResult = await manager.waitForSession(session.championId, {
-      timeoutSeconds: 1,
-      intervalSeconds: 1
+      timeoutSeconds: 0.2,
+      intervalSeconds: 0.05
     });
 
     expect(waitResult.completed).toBe(false);
     expect(waitResult.timedOut).toBe(true);
-    expect(waitResult.elapsedMs).toBeGreaterThanOrEqual(1_000);
+    expect(waitResult.elapsedMs).toBeGreaterThanOrEqual(200);
   });
 
   it('routes mixed Claude and Codex sessions to the correct backend and kill path', async () => {

@@ -197,8 +197,8 @@ export class SessionManager {
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
     const session = await this.requireSession(championId);
     const backend = this.getBackend(session.cli);
-    const timeoutMs = Math.max(1, options.timeoutSeconds ?? 300) * 1000;
-    const intervalMs = Math.max(1, options.intervalSeconds ?? 2) * 1000;
+    const timeoutMs = Math.max(0.05, options.timeoutSeconds ?? 300) * 1000;
+    const intervalMs = Math.max(0.05, options.intervalSeconds ?? 2) * 1000;
 
     const result = await backend.wait(session, timeoutMs, intervalMs);
 
