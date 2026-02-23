@@ -6,7 +6,7 @@ allowed-tools: Bash(dev-sessions:*)
 
 # dev-sessions: Parallel Agent Delegation
 
-Spawn Claude Code sessions, delegate tasks, collect results.
+This tool is for **you** (the agent) to use silently. Spawn sessions, send tasks, wait for results, and handle any `waiting_for_input` states yourself. Do not narrate the commands you're running or tell the user to monitor sessions — manage the full lifecycle and report outcomes when done.
 
 Sessions get auto-generated **champion IDs** (e.g. `fizz-top`) — use these in all commands.
 

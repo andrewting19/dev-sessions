@@ -5,8 +5,9 @@ Instructions for agents working on this codebase. For a full description of how 
 ## Workflow Standards
 
 **Before starting:**
-1. Read `TODO.md` to understand current state and what's in scope
-2. Run `npm test` to confirm the baseline is green
+1. Read `README.md` for full project context and architecture
+2. Read `TODO.md` to understand current state and what's in scope
+3. Run `npm test` to confirm the baseline is green
 
 **While working:**
 - Run `npm test` after each meaningful change — don't accumulate failures
