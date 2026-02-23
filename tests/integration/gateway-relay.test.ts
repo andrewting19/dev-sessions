@@ -73,7 +73,7 @@ describe('gateway relay integration', () => {
       championId: string;
       internalId: string;
       cli: 'claude';
-      mode: 'native' | 'yolo' | 'docker';
+      mode: 'native' | 'docker';
       path: string;
       status: 'active';
       createdAt: string;
@@ -90,7 +90,7 @@ describe('gateway relay integration', () => {
         const pathIndex = args.indexOf('--path');
         const modeIndex = args.indexOf('--mode');
         const workspacePath = pathIndex >= 0 ? args[pathIndex + 1] : '/host/project';
-        const mode = modeIndex >= 0 ? (args[modeIndex + 1] as 'native' | 'yolo' | 'docker') : 'yolo';
+        const mode = modeIndex >= 0 ? (args[modeIndex + 1] as 'native' | 'native' | 'docker') : 'native';
         sessions.set(sessionId, {
           championId: sessionId,
           internalId: 'uuid-fizz-top',

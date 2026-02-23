@@ -77,7 +77,7 @@ describeIfReal('real Claude e2e', () => {
     async () => {
       // Create session
       const createResult = await runDevSessionsCli(
-        ['create', '--path', context.workspaceDir, '--mode', 'yolo', '--quiet'],
+        ['create', '--path', context.workspaceDir, '--mode', 'native', '--quiet'],
         { cwd: context.workspaceDir }
       );
       expect(createResult.code).toBe(0);
@@ -129,7 +129,7 @@ describeIfReal('real Claude e2e', () => {
     'status transitions correctly across the session lifecycle',
     async () => {
       const createResult = await runDevSessionsCli(
-        ['create', '--path', context.workspaceDir, '--mode', 'yolo', '--quiet'],
+        ['create', '--path', context.workspaceDir, '--mode', 'native', '--quiet'],
         { cwd: context.workspaceDir }
       );
       expect(createResult.code).toBe(0);

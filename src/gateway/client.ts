@@ -69,7 +69,7 @@ export class GatewaySessionManager {
     const payload: Record<string, unknown> = {
       path: path.resolve(options.path ?? process.cwd()),
       cli: options.cli ?? 'claude',
-      mode: options.mode ?? 'yolo'
+      mode: options.mode ?? 'native'
     };
 
     if (typeof options.description === 'string' && options.description.trim().length > 0) {
@@ -96,7 +96,7 @@ export class GatewaySessionManager {
       championId: response.sessionId,
       internalId: response.sessionId,
       cli: (payload.cli as SessionCli) ?? 'claude',
-      mode: (payload.mode as SessionMode) ?? 'yolo',
+      mode: (payload.mode as SessionMode) ?? 'native',
       path: String(payload.path),
       description: options.description,
       status: 'active',

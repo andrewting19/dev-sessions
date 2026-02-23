@@ -82,6 +82,7 @@ class FakeCodexBackend extends CodexAppServerBackend {
   readonly statuses = new Map<string, AgentTurnStatus>();
   readonly messages = new Map<string, string[]>();
   readonly liveSessions = new Set<string>();
+  readonly threadIdToChampionId = new Map<string, string>();
   nextWaitForThreadResult: CodexTurnWaitResult = {
     completed: true,
     timedOut: false,
@@ -113,6 +114,7 @@ class FakeCodexBackend extends CodexAppServerBackend {
       model
     });
     this.liveSessions.add(championId);
+    this.threadIdToChampionId.set(`thr_${championId}`, championId);
     return {
       threadId: `thr_${championId}`,
       model
@@ -135,6 +137,7 @@ class FakeCodexBackend extends CodexAppServerBackend {
       options
     });
     const thread = this.nextSendResult.threadId === 'thr_default' ? threadId : this.nextSendResult.threadId;
+    this.statuses.set(championId, 'working');
     return {
       ...this.nextSendResult,
       threadId: thread
@@ -149,6 +152,13 @@ class FakeCodexBackend extends CodexAppServerBackend {
 
   override getSessionStatus(championId: string): AgentTurnStatus {
     return this.statuses.get(championId) ?? 'idle';
+  }
+
+  override async getThreadRuntimeStatus(threadId: string): Promise<'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown'> {
+    const championId = this.threadIdToChampionId.get(threadId);
+    if (!championId) return 'notLoaded';
+    const status = this.statuses.get(championId) ?? 'idle';
+    return status === 'working' ? 'active' : 'idle';
   }
 
   override async killSession(championId: string, pid?: number): Promise<void> {
@@ -233,7 +243,7 @@ describe('SessionManager', () => {
   it('waits for a new assistant response instead of stale transcript state', async () => {
     const session = await manager.createSession({
       path: '/tmp/project',
-      mode: 'yolo'
+      mode: 'native'
     });
 
     const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project');
@@ -279,7 +289,7 @@ describe('SessionManager', () => {
   it('returns immediately when latest user already has an assistant reply after last send timestamp', async () => {
     const session = await manager.createSession({
       path: '/tmp/project-ready',
-      mode: 'yolo'
+      mode: 'native'
     });
 
     await store.updateSession(session.championId, {
@@ -469,7 +479,7 @@ describe('SessionManager', () => {
   it('returns timedOut when Claude transcript does not complete before timeout', async () => {
     const session = await manager.createSession({
       path: '/tmp/project-timeout',
-      mode: 'yolo'
+      mode: 'native'
     });
 
     const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-timeout');

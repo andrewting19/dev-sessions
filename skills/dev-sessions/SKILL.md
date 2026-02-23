@@ -13,7 +13,7 @@ Sessions get auto-generated **champion IDs** (e.g. `fizz-top`) — use these in 
 ## Standard Workflow
 
 ```bash
-# Create (defaults: --cli claude --mode yolo --path <cwd>)
+# Create (defaults: --cli claude --mode native --path <cwd>)
 sid=$(dev-sessions create -q --path /abs/path/to/repo --description "fix parser bug")
 
 # Send task (inline or from file)
@@ -33,7 +33,7 @@ dev-sessions kill "$sid"
 ## Commands
 
 ```
-create   [-p path] [-d desc] [--cli claude|codex] [-m yolo|native|docker] [-q]
+create   [-p path] [-d desc] [--cli claude|codex] [-m native|docker] [-q]
 send     <id> [message] [-f file]
 wait     <id> [-t seconds] [-i interval_seconds]
 last-message <id> [-n count]
@@ -44,7 +44,7 @@ kill     <id>
 
 ## Key Flags
 
-- `--mode yolo` (default) — auto-approves all tool calls. **Always use for unattended delegation.**
+- `--mode native` (default) — runs with `--dangerously-skip-permissions`, auto-approves all tool calls. **Always use for unattended delegation.**
 - `--path` — defaults to your CWD. Set explicitly when delegating to a different repo.
 - `-q` on `create` — prints only the champion ID, ideal for `sid=$(...)` capture.
 

@@ -105,7 +105,7 @@ describeIfTmux('CLI e2e integration', () => {
     async () => {
       const activeContext = getContext(context);
       const createResult = await runDevSessionsCli(
-        ['create', '--path', activeContext.workspaceDir, '--mode', 'yolo', '--quiet'],
+        ['create', '--path', activeContext.workspaceDir, '--mode', 'native', '--quiet'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
 
@@ -130,7 +130,7 @@ describeIfTmux('CLI e2e integration', () => {
     async () => {
       const activeContext = getContext(context);
       const createResult = await runDevSessionsCli(
-        ['create', '--path', activeContext.workspaceDir, '--mode', 'yolo', '--quiet'],
+        ['create', '--path', activeContext.workspaceDir, '--mode', 'native', '--quiet'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
       expect(createResult.code).toBe(0);
@@ -167,7 +167,7 @@ describeIfTmux('CLI e2e integration', () => {
     async () => {
       const activeContext = getContext(context);
       const createResult = await runDevSessionsCli(
-        ['create', '--path', activeContext.workspaceDir, '--mode', 'yolo', '--quiet'],
+        ['create', '--path', activeContext.workspaceDir, '--mode', 'native', '--quiet'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
       expect(createResult.code).toBe(0);
@@ -221,7 +221,7 @@ describeIfTmux('CLI e2e integration', () => {
     async () => {
       const activeContext = getContext(context);
       const createResult = await runDevSessionsCli(
-        ['create', '--path', activeContext.workspaceDir, '--mode', 'yolo'],
+        ['create', '--path', activeContext.workspaceDir, '--mode', 'native'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
       expect(createResult.code).toBe(0);

@@ -1,4 +1,4 @@
-export type SessionMode = 'yolo' | 'native' | 'docker';
+export type SessionMode = 'native' | 'docker';
 
 export type SessionStatus = 'active' | 'inactive';
 

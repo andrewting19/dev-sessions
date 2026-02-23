@@ -22,7 +22,7 @@ function createSessionRecord(championId: string, internalId: string, workspacePa
     championId,
     internalId,
     cli: 'claude',
-    mode: 'yolo',
+    mode: 'native',
     path: workspacePath,
     description: 'integration transcript session',
     status: 'active',

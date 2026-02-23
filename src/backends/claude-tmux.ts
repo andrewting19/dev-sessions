@@ -162,7 +162,7 @@ export class ClaudeTmuxBackend {
     const binary = mode === 'docker' ? 'clauded' : 'claude';
     const commandParts = [`${binary} --session-id ${shellEscape(sessionUuid)}`];
 
-    if (mode === 'yolo') {
+    if (mode === 'native') {
       commandParts.push('--dangerously-skip-permissions');
     }
 

@@ -38,9 +38,9 @@ describe('ClaudeTmuxBackend', () => {
     vi.useRealTimers();
   });
 
-  it('builds yolo startup command with dangerously-skip-permissions', async () => {
+  it('builds native startup command with dangerously-skip-permissions', async () => {
     const backend = new ClaudeTmuxBackend();
-    await backend.createSession('dev-fizz-top', '/tmp/workspace', 'yolo', 'uuid-yolo');
+    await backend.createSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-native');
 
     expect(execFileMock).toHaveBeenCalledTimes(1);
     expect(execFileMock).toHaveBeenCalledWith(
@@ -54,14 +54,14 @@ describe('ClaudeTmuxBackend', () => {
         'dev-fizz-top',
         'bash',
         '-lc',
-        "cd '/tmp/workspace' && claude --session-id 'uuid-yolo' --dangerously-skip-permissions"
+        "cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
       ],
       expect.any(Object),
       expect.any(Function)
     );
   });
 
-  it('builds native startup command without dangerously-skip-permissions', async () => {
+  it('builds native startup command with dangerously-skip-permissions (always permissive)', async () => {
     const backend = new ClaudeTmuxBackend();
     await backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-native');
 
@@ -77,7 +77,7 @@ describe('ClaudeTmuxBackend', () => {
         'dev-riven-jg',
         'bash',
         '-lc',
-        "cd '/tmp/workspace' && claude --session-id 'uuid-native'"
+        "cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
       ],
       expect.any(Object),
       expect.any(Function)
@@ -126,7 +126,7 @@ describe('ClaudeTmuxBackend', () => {
     );
   });
 
-  it('polls for transcript file before returning from createSession (yolo)', async () => {
+  it('polls for transcript file before returning from createSession (native)', async () => {
     vi.useFakeTimers();
 
     const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -137,7 +137,7 @@ describe('ClaudeTmuxBackend', () => {
       .mockResolvedValue(undefined);
 
     const backend = new ClaudeTmuxBackend();
-    const createPromise = backend.createSession('dev-fizz-top', '/tmp/workspace', 'yolo', 'uuid-poll');
+    const createPromise = backend.createSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-poll');
 
     // Advance past two 200ms poll intervals.
     await vi.advanceTimersByTimeAsync(400);

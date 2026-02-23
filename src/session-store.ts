@@ -24,7 +24,7 @@ function isStoredSession(value: unknown): value is StoredSession {
     typeof candidate.championId === 'string' &&
     typeof candidate.internalId === 'string' &&
     (candidate.cli === 'claude' || candidate.cli === 'codex') &&
-    (candidate.mode === 'yolo' || candidate.mode === 'native' || candidate.mode === 'docker') &&
+    (candidate.mode === 'native' || candidate.mode === 'docker') &&
     typeof candidate.path === 'string' &&
     (candidate.description === undefined || typeof candidate.description === 'string') &&
     (candidate.status === 'active' || candidate.status === 'inactive') &&

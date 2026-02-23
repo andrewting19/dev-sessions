@@ -11,7 +11,7 @@ function createMockSession(championId: string): StoredSession {
     championId,
     internalId: `${championId}-uuid`,
     cli: 'claude',
-    mode: 'yolo',
+    mode: 'native',
     path: '/tmp/workspace',
     description: 'test session',
     status: 'active',
@@ -167,7 +167,7 @@ describe('CLI argument parsing', () => {
       expect(manager.createSession).toHaveBeenCalledWith({
         path: '/host/workspace',
         cli: 'claude',
-        mode: 'yolo',
+        mode: 'native',
         description: undefined
       });
     } finally {
@@ -205,7 +205,7 @@ describe('CLI argument parsing', () => {
     expect(manager.createSession).toHaveBeenCalledWith({
       path: process.cwd(),
       cli: 'codex',
-      mode: 'yolo',
+      mode: 'native',
       description: undefined
     });
   });

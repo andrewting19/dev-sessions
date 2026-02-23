@@ -11,7 +11,7 @@ const DEFAULT_GATEWAY_PORT = 6767;
 const DEFAULT_GATEWAY_CLI_BINARY = 'dev-sessions';
 
 const ALLOWED_CLIS: SessionCli[] = ['claude', 'codex'];
-const ALLOWED_MODES: SessionMode[] = ['yolo', 'native', 'docker'];
+const ALLOWED_MODES: SessionMode[] = ['native', 'docker'];
 
 export interface GatewayCommandResult {
   command: string[];
@@ -248,7 +248,7 @@ export function createGatewayApp(
 
       if (req.body.mode !== undefined) {
         if (typeof req.body.mode !== 'string' || !ALLOWED_MODES.includes(req.body.mode as SessionMode)) {
-          jsonError(res, 400, 'mode must be one of: yolo, native, docker');
+          jsonError(res, 400, 'mode must be one of: native, docker');
           return;
         }
         args.push('--mode', req.body.mode);

@@ -45,7 +45,7 @@ dev-sessions install-skill --global
 ## Usage
 
 ```bash
-# Create a session (defaults: --cli claude, --mode yolo)
+# Create a session (defaults: --cli claude, --mode native)
 dev-sessions create --description "refactor auth module"
 # => fizz-top
 
@@ -137,7 +137,7 @@ Persisted at `~/.dev-sessions/sessions.json`. No cross-process locking — avoid
 
 | Command | Description |
 |---------|-------------|
-| `create [options]` | Spawn a new agent session (`--cli claude\|codex`, `--mode yolo\|native\|docker`, `-q` quiet) |
+| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `-q` quiet) |
 | `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents) |
 | `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval) |
 | `last-message <id>` | Get last N assistant messages (`-n` count) |
@@ -154,8 +154,7 @@ Persisted at `~/.dev-sessions/sessions.json`. No cross-process locking — avoid
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| `yolo` | `--mode yolo` | Runs with permission bypass — `--dangerously-skip-permissions` for Claude, `approvalPolicy: never` for Codex (default) |
-| `native` | `--mode native` | Runs normally, will prompt for permissions |
+| `native` | `--mode native` | Runs with `--dangerously-skip-permissions` — auto-approves all tool calls (default) |
 | `docker` | `--mode docker` | Runs via `clauded` Docker wrapper (Claude Code only) |
 
 ## Session Lifecycle
@@ -204,7 +203,7 @@ Spawns Claude inside Docker via a `clauded` binary on the host. See [claude-ting
 - **`docker` mode is Claude-only**: Codex + Docker not implemented.
 - **Session store has no locking**: Concurrent `create` calls can race. Avoid for now.
 - **Gateway port conflict**: Default port 6767 can conflict with Docker. Use `DEV_SESSIONS_GATEWAY_PORT` to override.
-- **No `respond` command**: No structured way to respond to `waiting_for_input` sessions. Only matters for non-yolo modes.
+- **No `respond` command**: No structured way to respond to `waiting_for_input` sessions. Only matters for non-native modes.
 - **Claude permission prompts undetectable**: TUI-level prompts aren't written to JSONL — `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
 
 ---

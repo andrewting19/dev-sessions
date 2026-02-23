@@ -235,15 +235,15 @@ export function buildProgram(
     )
     .addOption(
       new Option('-m, --mode <mode>', 'Session mode')
-        .choices(['yolo', 'native', 'docker'])
-        .default('yolo')
+        .choices(['native', 'docker'])
+        .default('native')
     )
     .option('-q, --quiet', 'Only print session ID (for scripts)')
     .action(async (options: {
       path: string;
       description?: string;
       cli: 'claude' | 'codex';
-      mode: 'yolo' | 'native' | 'docker';
+      mode: 'native' | 'docker';
       quiet?: boolean;
     }) => {
       const session = await manager.createSession({

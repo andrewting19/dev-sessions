@@ -77,8 +77,8 @@
 
 ## Known Issues (open)
 
-- [ ] **Codex ignores `--mode` flag** — `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of mode. Low priority since we always use yolo.
-- [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-yolo modes.
+- [ ] **Codex ignores `--mode` flag** — `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of mode. Low priority since native mode always uses permissive settings.
+- [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-native modes.
 - [ ] **Claude permission prompts undetectable** — TUI elements, not in JSONL transcript. `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
 - [x] **Codex `last-message` returns empty** — fixed: `waitForTurnCompletion` now includes `assistantText` in result; `wait` persists it to `lastAssistantMessages` in the store.
 - [ ] **Gateway `last-message` block splitting** — `cli.ts` joins blocks with blank lines; `gateway/server.ts` splits on blank lines — assistant messages with paragraph breaks get corrupted. Fix: use structured JSON over the gateway.

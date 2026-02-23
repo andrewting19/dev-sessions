@@ -26,7 +26,7 @@ export class ClaudeBackend implements Backend {
   }
 
   async create(options: BackendCreateOptions): Promise<BackendCreateResult> {
-    const mode = options.mode ?? 'yolo';
+    const mode = options.mode ?? 'native';
     const internalId = randomUUID();
     const tmuxSessionName = toTmuxSessionName(options.championId);
     await this.raw.createSession(tmuxSessionName, options.workspacePath, mode, internalId);

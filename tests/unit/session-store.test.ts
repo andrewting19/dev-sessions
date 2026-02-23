@@ -11,7 +11,7 @@ function createSession(championId: string): StoredSession {
     championId,
     internalId: `${championId}-uuid`,
     cli: 'claude',
-    mode: 'yolo',
+    mode: 'native',
     path: '/tmp/project',
     description: `session ${championId}`,
     status: 'active',
