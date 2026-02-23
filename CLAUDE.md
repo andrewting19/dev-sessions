@@ -58,7 +58,9 @@ tests/
 
 ## Non-Obvious Gotchas
 
-- **Codex `ThreadStatus` JSON shape**: `"idle"`, `"notLoaded"`, `"systemError"` are plain strings. `"active"` is `{ "active": { "activeFlags": [...] } }`. Do NOT look for a `.type` field — wrong shape, always returns `undefined`.
+- **Codex `ThreadStatus` JSON shape**: As of codex-cli 0.104.0 (the current stable release), `thread.status` is **absent** when idle — the field doesn't exist in the response at all. `"active"` is `{ "active": { "activeFlags": [...] } }`. Do NOT look for a `.type` field. NOTE: the Rust source in `/tmp/codex` (pinned to the last commit before 0.104.0 was published — `1946a4c4`) shows `thread.status` was added *after* 0.104.0 shipped. When 0.105.0 stable releases, the shape will change to tagged objects like `{"type":"idle"}` and the parser will need updating. Always verify protocol behavior against the pinned `/tmp/codex` source AND the live binary — they may differ across releases.
+
+- **Inspecting Codex protocol source**: `/tmp/codex` is a clone of the openai/codex repo pinned to commit `1946a4c4` (last commit before 0.104.0 was published Feb 18 2026 07:13 UTC). To check what a future version adds, use `git -C /tmp/codex log --oneline --format="%h %aI %s"` to find commits by date. When the installed binary is updated, re-pin `/tmp/codex` to the matching commit.
 
 - **`send` is non-blocking**: Returns after `turn/started` (Codex) or after tmux send-keys (Claude). `wait` is the blocking primitive. Tests that assume send blocks will need updating.
 
