@@ -20,6 +20,7 @@ export interface StoredSession {
   appServerPort?: number;
   model?: string;
   codexTurnInProgress?: boolean;
+  codexActiveTurnId?: string;
   codexLastCompletedAt?: string;
   lastTurnStatus?: CodexTurnStatus;
   lastTurnError?: string;

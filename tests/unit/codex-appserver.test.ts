@@ -23,7 +23,7 @@ interface FakeClientScript {
 
 class FakeRpcClient implements CodexRpcClient {
   readonly requests: RecordedRequest[] = [];
-  readonly waitCalls: Array<{ timeoutMs: number; expectedThreadId?: string }> = [];
+  readonly waitCalls: Array<{ timeoutMs: number; expectedThreadId?: string; expectedTurnId?: string }> = [];
   connectCalls = 0;
   closeCalls = 0;
   currentTurnText = '';
@@ -49,8 +49,16 @@ class FakeRpcClient implements CodexRpcClient {
     return response;
   }
 
-  async waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult> {
-    this.waitCalls.push({ timeoutMs, expectedThreadId });
+  async waitForTurnCompletion(
+    timeoutMs: number,
+    expectedThreadId?: string,
+    expectedTurnId?: string
+  ): Promise<CodexTurnWaitResult> {
+    this.waitCalls.push({
+      timeoutMs,
+      ...(expectedThreadId ? { expectedThreadId } : {}),
+      ...(expectedTurnId ? { expectedTurnId } : {})
+    });
     const queued = this.script.waitResults?.shift();
     const result =
       queued ??
@@ -357,7 +365,7 @@ describe('CodexAppServerBackend', () => {
             return { thread: { id: 'thr_slow' } };
           }
           if (method === 'turn/start') {
-            return {};
+            return { turn: { id: 'turn_slow_1' } };
           }
           throw new Error(`Unexpected method: ${method}`);
         }
@@ -371,9 +379,13 @@ describe('CodexAppServerBackend', () => {
     expect(sendResult).toEqual({
       threadId: 'thr_slow',
       appServerPid: 9001,
-      appServerPort: 4510
+      appServerPort: 4510,
+      turnId: 'turn_slow_1'
     });
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start', 'turn/start']);
+    expect(clients[0].waitCalls).toEqual([
+      { timeoutMs: 3_000, expectedThreadId: 'thr_slow', expectedTurnId: 'turn_slow_1' }
+    ]);
     expect(backend.getSessionStatus('vex-mid')).toBe('idle');
   });
 
@@ -559,6 +571,39 @@ describe('CodexAppServerBackend', () => {
       status: 'completed'
     });
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
+  it('waits for the specific started turn ID even when thread status polling would be unreliable', async () => {
+    const { backend, clients } = createHarness([
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 1_250,
+          status: 'completed',
+          assistantText: 'timed command done.'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_timed', status: 'idle' } };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('kennen-sup', 'thr_timed', 40_000, 'turn_timed');
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed',
+      assistantText: 'timed command done.'
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+    expect(clients[0].waitCalls).toEqual([
+      { timeoutMs: 40_000, expectedThreadId: 'thr_timed', expectedTurnId: 'turn_timed' }
+    ]);
   });
 
   it('treats unknown runtime status as completed (idle thread)', async () => {

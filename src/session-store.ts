@@ -32,6 +32,7 @@ function isStoredSession(value: unknown): value is StoredSession {
     (candidate.appServerPort === undefined || Number.isInteger(candidate.appServerPort)) &&
     (candidate.model === undefined || typeof candidate.model === 'string') &&
     (candidate.codexTurnInProgress === undefined || typeof candidate.codexTurnInProgress === 'boolean') &&
+    (candidate.codexActiveTurnId === undefined || typeof candidate.codexActiveTurnId === 'string') &&
     (candidate.codexLastCompletedAt === undefined || typeof candidate.codexLastCompletedAt === 'string') &&
     (candidate.lastTurnStatus === undefined ||
       candidate.lastTurnStatus === 'completed' ||

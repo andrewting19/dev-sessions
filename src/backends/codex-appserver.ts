@@ -30,6 +30,7 @@ interface TurnWaiter {
   startTime: number;
   timeoutHandle: NodeJS.Timeout;
   expectedThreadId?: string;
+  expectedTurnId?: string;
   resolve: (result: CodexTurnWaitResult) => void;
 }
 
@@ -78,6 +79,7 @@ export interface CodexSendResult {
   threadId: string;
   appServerPid: number;
   appServerPort: number;
+  turnId?: string;
   assistantText?: string;
 }
 
@@ -87,7 +89,7 @@ export interface CodexRpcClient {
   readonly lastTurnError?: string;
   connectAndInitialize(): Promise<void>;
   request(method: string, params?: unknown): Promise<unknown>;
-  waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult>;
+  waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string, expectedTurnId?: string): Promise<CodexTurnWaitResult>;
   close(): Promise<void>;
 }
 
@@ -370,6 +372,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
   private turnStatus?: TurnCompletionStatus;
   private turnError?: string;
   private turnThreadId?: string;
+  private turnId?: string;
   private closed = false;
   private closing = false;
 
@@ -447,9 +450,15 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
     });
   }
 
-  async waitForTurnCompletion(timeoutMs: number, expectedThreadId?: string): Promise<CodexTurnWaitResult> {
-    const cachedMatchesExpected =
+  async waitForTurnCompletion(
+    timeoutMs: number,
+    expectedThreadId?: string,
+    expectedTurnId?: string
+  ): Promise<CodexTurnWaitResult> {
+    const cachedMatchesThread =
       !expectedThreadId || (typeof this.turnThreadId === 'string' && this.turnThreadId === expectedThreadId);
+    const cachedMatchesTurn = !expectedTurnId || (typeof this.turnId === 'string' && this.turnId === expectedTurnId);
+    const cachedMatchesExpected = cachedMatchesThread && cachedMatchesTurn;
     if (this.turnStatus && cachedMatchesExpected) {
       return {
         completed: true,
@@ -481,6 +490,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
         startTime,
         timeoutHandle,
         expectedThreadId,
+        expectedTurnId,
         resolve
       });
     });
@@ -649,6 +659,16 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       return;
     }
 
+    if (notification.method === 'turn/started') {
+      const turn = (notification.params as { turn?: unknown } | undefined)?.turn;
+      this.turnStatus = undefined;
+      this.turnError = undefined;
+      this.turnThreadId = extractNotificationThreadId(notification.params);
+      this.turnId = extractTurnId(turn);
+      this.currentText = '';
+      return;
+    }
+
     if (notification.method !== 'turn/completed') {
       return;
     }
@@ -660,13 +680,15 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
     }
 
     const notificationThreadId = extractNotificationThreadId(notification.params);
-    if (this.waiters.length > 0 && !this.hasMatchingWaiterForThread(notificationThreadId)) {
+    const notificationTurnId = extractTurnId(turn);
+    if (this.waiters.length > 0 && !this.hasMatchingWaiterForTurn(notificationThreadId, notificationTurnId)) {
       return;
     }
 
     this.turnStatus = status;
     this.turnError = extractTurnError(turn);
     this.turnThreadId = notificationThreadId;
+    this.turnId = notificationTurnId;
     this.resolveWaiters({
       completed: true,
       timedOut: false,
@@ -674,26 +696,31 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       status,
       errorMessage: this.turnError,
       assistantText: this.currentText.length > 0 ? this.currentText : undefined
-    }, notificationThreadId);
+    }, notificationThreadId, notificationTurnId);
   }
 
-  private hasMatchingWaiterForThread(threadId: string | undefined): boolean {
+  private hasMatchingWaiterForTurn(threadId: string | undefined, turnId: string | undefined): boolean {
     return this.waiters.some((waiter) => {
-      if (!waiter.expectedThreadId) {
-        return true;
-      }
-
-      return threadId === waiter.expectedThreadId;
+      const threadMatches = !waiter.expectedThreadId || threadId === waiter.expectedThreadId;
+      const turnMatches = !waiter.expectedTurnId || turnId === waiter.expectedTurnId;
+      return threadMatches && turnMatches;
     });
   }
 
-  private resolveWaiters(baseResult: CodexTurnWaitResult, completedThreadId?: string, forceAll: boolean = false): void {
+  private resolveWaiters(
+    baseResult: CodexTurnWaitResult,
+    completedThreadId?: string,
+    completedTurnId?: string,
+    forceAll: boolean = false
+  ): void {
     const waiters = this.waiters;
     this.waiters = [];
     const now = Date.now();
 
     for (const waiter of waiters) {
-      if (!forceAll && waiter.expectedThreadId && completedThreadId !== waiter.expectedThreadId) {
+      const threadMatches = !waiter.expectedThreadId || completedThreadId === waiter.expectedThreadId;
+      const turnMatches = !waiter.expectedTurnId || completedTurnId === waiter.expectedTurnId;
+      if (!forceAll && !(threadMatches && turnMatches)) {
         this.waiters.push(waiter);
         continue;
       }
@@ -729,7 +756,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       elapsedMs: 0,
       status: this.turnStatus,
       errorMessage: this.turnError
-    }, undefined, true);
+    }, undefined, undefined, true);
   }
 
   private notify(method: string, params?: unknown): void {
@@ -875,6 +902,23 @@ function extractNotificationThreadId(params: unknown): string | undefined {
   return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined;
 }
 
+function extractTurnId(turn: unknown): string | undefined {
+  if (!turn || typeof turn !== 'object') {
+    return undefined;
+  }
+
+  const turnId = (turn as { id?: unknown }).id;
+  return typeof turnId === 'string' && turnId.length > 0 ? turnId : undefined;
+}
+
+function extractStartedTurnId(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') {
+    return undefined;
+  }
+
+  return extractTurnId((result as { turn?: unknown }).turn);
+}
+
 function extractTurnStatus(turn: unknown): TurnCompletionStatus | undefined {
   if (!turn || typeof turn !== 'object') {
     return undefined;
@@ -993,18 +1037,20 @@ export class CodexAppServerBackend {
         tid = extractThreadId(threadResult);
       }
 
-      await client.request('turn/start', {
+      const turnStartResult = await client.request('turn/start', {
         threadId: tid,
         input: [{ type: 'text', text: message }]
       });
+      const startedTurnId = extractStartedTurnId(turnStartResult);
 
       // Best-effort: wait a short time for the turn to complete on this connection.
       // Captures fast responses (e.g. short answers) without blocking for long tasks.
-      // Only use the result if the turn actually completed — not if it timed out.
+      // Only use the result if the exact initiated turn actually completed — not
+      // if it timed out or a different turn completed on the same thread.
       const FAST_CAPTURE_TIMEOUT_MS = 3_000;
-      const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS, tid);
+      const earlyResult = await client.waitForTurnCompletion(FAST_CAPTURE_TIMEOUT_MS, tid, startedTurnId);
       const completedEarly = !earlyResult.timedOut && earlyResult.status === 'completed';
-      return { tid, assistantText: completedEarly ? earlyResult.assistantText : undefined };
+      return { tid, turnId: startedTurnId, assistantText: completedEarly ? earlyResult.assistantText : undefined };
     });
 
     const state = this.ensureSessionState(championId);
@@ -1016,6 +1062,7 @@ export class CodexAppServerBackend {
       threadId: activeThreadId.tid,
       appServerPid: server.pid,
       appServerPort: server.port,
+      turnId: activeThreadId.turnId,
       assistantText: activeThreadId.assistantText
     };
   }
@@ -1034,12 +1081,18 @@ export class CodexAppServerBackend {
     return result;
   }
 
-  async waitForThread(championId: string, threadId: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CodexTurnWaitResult> {
+  async waitForThread(
+    championId: string,
+    threadId: string,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    expectedTurnId?: string
+  ): Promise<CodexTurnWaitResult> {
     const normalizedThreadId = threadId.trim();
     if (normalizedThreadId.length === 0) {
       return { completed: true, timedOut: false, elapsedMs: 0, status: 'completed' };
     }
 
+    const normalizedExpectedTurnId = expectedTurnId?.trim() ?? '';
     const state = this.ensureSessionState(championId);
     const safeTimeoutMs = Math.max(1, timeoutMs);
 
@@ -1047,6 +1100,30 @@ export class CodexAppServerBackend {
     let lastAssistantText: string | undefined;
     let sawActiveTurn = false;
     let result: CodexTurnWaitResult | undefined;
+
+    if (normalizedExpectedTurnId.length > 0) {
+      // Codex 0.104.0 can report thread/resume=idle and thread/read turn.status=completed
+      // while the initiated turn is still running tools. When we know the exact turn ID
+      // from turn/start, block on that turn's completion notification instead of trusting
+      // thread runtime status.
+      const waitCycle = await this.withConnectedClient(async (client) => {
+        // Resume first so this connection is subscribed to notifications for the thread.
+        await client.request('thread/resume', { threadId: normalizedThreadId });
+        return client.waitForTurnCompletion(safeTimeoutMs, normalizedThreadId, normalizedExpectedTurnId);
+      });
+
+      if (waitCycle.result.assistantText) {
+        lastAssistantText = waitCycle.result.assistantText;
+      }
+
+      result = {
+        ...waitCycle.result,
+        elapsedMs: waitCycle.result.timedOut
+          ? Math.max(waitCycle.result.elapsedMs, Date.now() - overallStart)
+          : waitCycle.result.elapsedMs,
+        assistantText: waitCycle.result.assistantText ?? lastAssistantText
+      };
+    }
 
     while (!result) {
       const elapsedMs = Date.now() - overallStart;

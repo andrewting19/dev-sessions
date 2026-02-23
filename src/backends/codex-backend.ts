@@ -31,6 +31,7 @@ export class CodexBackend implements Backend {
       lastUsed: sendTime,
       status: 'active',
       codexTurnInProgress: true,
+      codexActiveTurnId: undefined,
       lastTurnStatus: undefined,
       lastTurnError: undefined
     };
@@ -42,13 +43,16 @@ export class CodexBackend implements Backend {
       model: session.model
     });
     const existingMessages = session.lastAssistantMessages ?? [];
+    const completedEarly = typeof sendResult.assistantText === 'string';
+    const earlyAssistantText = sendResult.assistantText;
     const update: Partial<StoredSession> = {
       internalId: sendResult.threadId,
       appServerPid: sendResult.appServerPid,
-      appServerPort: sendResult.appServerPort
+      appServerPort: sendResult.appServerPort,
+      codexActiveTurnId: completedEarly ? undefined : sendResult.turnId
     };
-    if (sendResult.assistantText) {
-      update.lastAssistantMessages = [...existingMessages, sendResult.assistantText];
+    if (typeof earlyAssistantText === 'string') {
+      update.lastAssistantMessages = [...existingMessages, earlyAssistantText];
       update.codexTurnInProgress = false;
     }
     return update;
@@ -57,6 +61,7 @@ export class CodexBackend implements Backend {
   onSendError(_session: StoredSession, error: Error): Partial<StoredSession> {
     return {
       codexTurnInProgress: false,
+      codexActiveTurnId: undefined,
       lastTurnStatus: 'failed',
       lastTurnError: error.message,
       lastUsed: new Date().toISOString()
@@ -83,8 +88,9 @@ export class CodexBackend implements Backend {
 
   async wait(session: StoredSession, timeoutMs: number, _intervalMs: number): Promise<BackendWaitResult> {
     const baseStoreUpdate: Partial<StoredSession> = { lastUsed: new Date().toISOString() };
+    const hasPendingTurnId = typeof session.codexActiveTurnId === 'string' && session.codexActiveTurnId.length > 0;
 
-    if (!session.codexTurnInProgress && session.lastTurnStatus === 'failed') {
+    if (!session.codexTurnInProgress && !hasPendingTurnId && session.lastTurnStatus === 'failed') {
       let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
       try {
         liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
@@ -116,7 +122,7 @@ export class CodexBackend implements Backend {
       // Thread is active — fall through to waitForThread below
     }
 
-    if (!session.codexTurnInProgress) {
+    if (!session.codexTurnInProgress && !hasPendingTurnId) {
       let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
       try {
         liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
@@ -136,7 +142,12 @@ export class CodexBackend implements Backend {
 
     let waitResult: Awaited<ReturnType<CodexAppServerBackend['waitForThread']>>;
     try {
-      waitResult = await this.raw.waitForThread(session.championId, session.internalId, timeoutMs);
+      waitResult = await this.raw.waitForThread(
+        session.championId,
+        session.internalId,
+        timeoutMs,
+        hasPendingTurnId ? session.codexActiveTurnId : undefined
+      );
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       return {
@@ -145,6 +156,7 @@ export class CodexBackend implements Backend {
         elapsedMs: 0,
         storeUpdate: {
           codexTurnInProgress: false,
+          codexActiveTurnId: undefined,
           lastTurnStatus: 'failed',
           lastTurnError: err.message,
           lastUsed: new Date().toISOString()
@@ -162,6 +174,7 @@ export class CodexBackend implements Backend {
     const postWaitUpdate: Partial<StoredSession> = {
       lastUsed: completionTime,
       codexTurnInProgress: turnStillInProgress,
+      codexActiveTurnId: turnStillInProgress ? session.codexActiveTurnId : undefined,
       codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
       // Don't write lastTurnStatus/lastTurnError on timeout — server is source of truth.
       // Only update turn outcome when the server actually told us something.
