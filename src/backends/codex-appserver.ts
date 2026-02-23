@@ -362,7 +362,6 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
   private ws?: WebSocket;
   private connectPromise?: Promise<void>;
   private nextRequestId = 1;
-  private stdoutBuffer = '';
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private waiters: TurnWaiter[] = [];
   private currentText = '';
@@ -583,24 +582,7 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
   }
 
   private handleMessageFrame(frame: string): void {
-    if (!frame.includes('\n') && this.stdoutBuffer.length === 0) {
-      this.handleMaybeJsonLine(frame);
-      return;
-    }
-
-    this.stdoutBuffer += frame;
-    const lines = this.stdoutBuffer.split('\n');
-    this.stdoutBuffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      this.handleMaybeJsonLine(line);
-    }
-
-    if (this.stdoutBuffer.trim().length > 0) {
-      const pendingBuffer = this.stdoutBuffer;
-      this.stdoutBuffer = '';
-      this.handleMaybeJsonLine(pendingBuffer);
-    }
+    this.handleMaybeJsonLine(frame);
   }
 
   private handleMaybeJsonLine(rawLine: string): void {
@@ -613,10 +595,6 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
     try {
       payload = JSON.parse(trimmed);
     } catch {
-      // If parsing fails, keep buffering behavior for newline-delimited mode.
-      if (!rawLine.includes('\n')) {
-        this.stdoutBuffer = rawLine;
-      }
       return;
     }
 
