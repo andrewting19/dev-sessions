@@ -870,34 +870,8 @@ function extractDeltaText(params: unknown): string {
     return '';
   }
 
-  const asRecord = params as Record<string, unknown>;
-  const directText = asRecord.text;
-  if (typeof directText === 'string') {
-    return directText;
-  }
-
-  const delta = asRecord.delta;
-  if (typeof delta === 'string') {
-    return delta;
-  }
-
-  if (delta && typeof delta === 'object' && typeof (delta as Record<string, unknown>).text === 'string') {
-    return (delta as Record<string, string>).text;
-  }
-
-  const item = asRecord.item;
-  if (item && typeof item === 'object') {
-    const nestedDelta = (item as Record<string, unknown>).delta;
-    if (
-      nestedDelta &&
-      typeof nestedDelta === 'object' &&
-      typeof (nestedDelta as Record<string, unknown>).text === 'string'
-    ) {
-      return (nestedDelta as Record<string, string>).text;
-    }
-  }
-
-  return '';
+  const delta = (params as Record<string, unknown>).delta;
+  return typeof delta === 'string' ? delta : '';
 }
 
 function extractTurnStatus(turn: unknown): TurnCompletionStatus | undefined {
