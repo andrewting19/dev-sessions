@@ -274,7 +274,7 @@ describe('SessionManager', () => {
     setTimeout(() => {
       void appendFile(
         transcriptPath,
-        '\n{"type":"assistant","message":{"content":[{"type":"text","text":"new done"}]}}',
+        '\n{"type":"assistant","message":{"content":[{"type":"text","text":"new done"}]}}\n{"type":"system"}',
         'utf8'
       );
     }, 120);
@@ -286,36 +286,79 @@ describe('SessionManager', () => {
     expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
   });
 
-  it('returns immediately when latest user already has an assistant reply after last send timestamp', async () => {
+  it('completes via file-history-snapshot when turn ends without a system entry', async () => {
     const session = await manager.createSession({
-      path: '/tmp/project-ready',
+      path: '/tmp/project-fhs',
       mode: 'native'
     });
 
-    await store.updateSession(session.championId, {
-      lastUsed: '2026-01-01T00:00:00.000Z'
-    });
-
-    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-ready');
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-fhs');
     const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
     await mkdir(transcriptDir, { recursive: true });
+    // Stale previous turn — no system entry yet.
     await writeFile(
       transcriptPath,
       [
-        '{"type":"user","timestamp":"2026-01-01T00:00:10.000Z","message":{"content":"run this"}}',
-        '{"type":"assistant","timestamp":"2026-01-01T00:00:12.000Z","message":{"content":[{"type":"text","text":"done"}]}}'
+        '{"type":"user","message":{"content":"old task"}}',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"old done"}]}}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const waitPromise = manager.waitForSession(session.championId, {
+      timeoutSeconds: 2,
+      intervalSeconds: 0.05
+    });
+
+    setTimeout(() => {
+      void appendFile(transcriptPath, '\n{"type":"user","message":{"content":"new task"}}', 'utf8');
+    }, 20);
+
+    // New assistant + file-history-snapshot (no system) — matches long tool-run turn pattern.
+    setTimeout(() => {
+      void appendFile(
+        transcriptPath,
+        '\n{"type":"assistant","message":{"content":[{"type":"text","text":"new done"}]}}\n{"type":"file-history-snapshot","messageId":"x","snapshot":{},"isSnapshotUpdate":false}',
+        'utf8'
+      );
+    }, 120);
+
+    const result = await waitPromise;
+
+    expect(result.completed).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
+  });
+
+  it('does not complete early when stale transcript already has an assistant entry', async () => {
+    const session = await manager.createSession({
+      path: '/tmp/project-stale',
+      mode: 'native'
+    });
+
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-stale');
+    const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
+    await mkdir(transcriptDir, { recursive: true });
+    // Previous turn fully completed with system + file-history-snapshot already in transcript.
+    await writeFile(
+      transcriptPath,
+      [
+        '{"type":"user","message":{"content":"old task"}}',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"old done"}]}}',
+        '{"type":"system"}',
+        '{"type":"file-history-snapshot","messageId":"x","snapshot":{},"isSnapshotUpdate":false}'
       ].join('\n'),
       'utf8'
     );
 
     const result = await manager.waitForSession(session.championId, {
-      timeoutSeconds: 5,
-      intervalSeconds: 1
+      timeoutSeconds: 0.2,
+      intervalSeconds: 0.05
     });
 
-    expect(result.completed).toBe(true);
-    expect(result.timedOut).toBe(false);
-    expect(result.elapsedMs).toBeLessThan(500);
+    // Stale completion signals should not trigger early return — wait should time out.
+    expect(result.completed).toBe(false);
+    expect(result.timedOut).toBe(true);
   });
 
   it('routes codex sessions through codex app-server backend methods', async () => {

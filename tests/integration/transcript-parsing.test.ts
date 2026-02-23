@@ -106,7 +106,7 @@ describe('transcript parsing integration', () => {
             message: {
               content: [{ type: 'text', text: 'new done' }]
             }
-          })}`,
+          })}\n${toJsonlLine({ type: 'system' })}`,
           'utf8'
         );
       }, 200);

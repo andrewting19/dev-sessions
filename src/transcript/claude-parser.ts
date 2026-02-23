@@ -177,6 +177,13 @@ export function countSystemEntries(entries: ClaudeTranscriptEntry[]): number {
   return entries.reduce((count, entry) => count + (entry.type === 'system' ? 1 : 0), 0);
 }
 
+export function countFileHistorySnapshots(entries: ClaudeTranscriptEntry[]): number {
+  return entries.reduce(
+    (count, entry) => count + (entry.type === 'file-history-snapshot' ? 1 : 0),
+    0
+  );
+}
+
 function findLastIndex(
   entries: ClaudeTranscriptEntry[],
   predicate: (entry: ClaudeTranscriptEntry) => boolean

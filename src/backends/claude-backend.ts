@@ -3,11 +3,11 @@ import { stat } from 'node:fs/promises';
 import { toTmuxSessionName } from '../champion-ids';
 import {
   countAssistantMessages,
+  countFileHistorySnapshots,
   countSystemEntries,
   extractTextBlocks,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
-  hasAssistantResponseAfterLatestUser,
   inferTranscriptStatus,
   readClaudeTranscript
 } from '../transcript/claude-parser';
@@ -64,10 +64,10 @@ export class ClaudeBackend implements Backend {
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
     const startTime = Date.now();
     const deadline = startTime + timeoutMs;
-    const latestSendMs = Date.parse(session.lastUsed);
     const initialEntries = await readClaudeTranscript(transcriptPath);
     const baselineAssistantCount = countAssistantMessages(initialEntries);
     const baselineSystemCount = countSystemEntries(initialEntries);
+    const baselineFileHistoryCount = countFileHistorySnapshots(initialEntries);
 
     let lastMtimeMs = -1;
     let shouldReadTranscript = false;
@@ -93,12 +93,12 @@ export class ClaudeBackend implements Backend {
         shouldReadTranscript = false;
       }
 
-      const status = inferTranscriptStatus(cachedEntries);
-      const hasNewSystemEntry = countSystemEntries(cachedEntries) > baselineSystemCount;
       const hasNewAssistant = countAssistantMessages(cachedEntries) > baselineAssistantCount;
-      const hasRecentAssistant = this.hasAssistantResponseAtOrAfter(cachedEntries, latestSendMs);
+      const hasNewSystemEntry = countSystemEntries(cachedEntries) > baselineSystemCount;
+      const hasNewFileHistorySnapshot = countFileHistorySnapshots(cachedEntries) > baselineFileHistoryCount;
 
-      if (hasNewSystemEntry && (hasNewAssistant || hasRecentAssistant)) {
+      // A system entry followed by a new assistant message is the primary completion signal.
+      if (hasNewSystemEntry && hasNewAssistant) {
         return {
           completed: true,
           timedOut: false,
@@ -107,11 +107,9 @@ export class ClaudeBackend implements Backend {
         };
       }
 
-      if (
-        (status === 'idle' || status === 'waiting_for_input') &&
-        hasAssistantResponseAfterLatestUser(cachedEntries) &&
-        (hasNewAssistant || hasRecentAssistant)
-      ) {
+      // For turns that end without a system entry (e.g. long tool runs), Claude writes a
+      // file-history-snapshot at turn completion. Use that as the fallback signal.
+      if (hasNewFileHistorySnapshot && hasNewAssistant) {
         return {
           completed: true,
           timedOut: false,
@@ -181,29 +179,6 @@ export class ClaudeBackend implements Backend {
 
   async afterKill(_remainingActiveSessions: StoredSession[]): Promise<void> {
     // No post-kill cleanup needed for Claude
-  }
-
-  private hasAssistantResponseAtOrAfter(
-    entries: Awaited<ReturnType<typeof readClaudeTranscript>>,
-    thresholdMs: number
-  ): boolean {
-    if (!Number.isFinite(thresholdMs)) {
-      return false;
-    }
-
-    return entries.some((entry) => {
-      if (entry.type?.toLowerCase() !== 'assistant') {
-        return false;
-      }
-
-      const timestamp = entry.timestamp;
-      if (typeof timestamp !== 'string') {
-        return false;
-      }
-
-      const parsed = Date.parse(timestamp);
-      return !Number.isNaN(parsed) && parsed >= thresholdMs;
-    });
   }
 
   private async sleep(ms: number): Promise<void> {
