@@ -162,12 +162,17 @@ export class CodexBackend implements Backend {
 
     const completionTime = new Date().toISOString();
     const turnStillInProgress = waitResult.timedOut;
+    const existingMessages = session.lastAssistantMessages ?? [];
+    const updatedMessages = waitResult.assistantText
+      ? [...existingMessages, waitResult.assistantText]
+      : existingMessages;
     const postWaitUpdate: Partial<StoredSession> = {
       lastUsed: completionTime,
       codexTurnInProgress: turnStillInProgress,
       codexLastCompletedAt: turnStillInProgress ? session.codexLastCompletedAt : completionTime,
       lastTurnStatus: waitResult.status,
-      lastTurnError: waitResult.errorMessage
+      lastTurnError: waitResult.errorMessage,
+      lastAssistantMessages: updatedMessages
     };
 
     if (waitResult.status === 'failed') {
@@ -215,6 +220,7 @@ export class CodexBackend implements Backend {
     if (sessionMessages.length > 0) {
       return sessionMessages.slice(-safeCount);
     }
+    // Fall back to thread/read (works when session was loaded from store without wait being called)
     return this.raw.getLastAssistantMessages(session.championId, session.internalId, safeCount);
   }
 

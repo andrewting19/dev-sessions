@@ -65,6 +65,7 @@ export interface CodexTurnWaitResult {
   elapsedMs: number;
   status: TurnCompletionStatus;
   errorMessage?: string;
+  assistantText?: string;
 }
 
 export interface CodexSendMessageOptions {
@@ -680,7 +681,8 @@ class CodexWebSocketRpcClient implements CodexRpcClient {
       timedOut: false,
       elapsedMs: 0,
       status,
-      errorMessage: this.turnError
+      errorMessage: this.turnError,
+      assistantText: this.currentText.length > 0 ? this.currentText : undefined
     });
   }
 
@@ -1079,6 +1081,9 @@ export class CodexAppServerBackend {
 
     state.lastTurnStatus = result.status;
     state.lastTurnError = result.errorMessage;
+    if (result.assistantText) {
+      state.assistantHistory.push(result.assistantText);
+    }
     return result;
   }
 
