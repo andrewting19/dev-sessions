@@ -397,6 +397,29 @@ describe('SessionManager', () => {
     ]);
   });
 
+  it('refreshes codex last-message from backend when a completed turn may make store cache stale', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-stale-last-message'
+    });
+
+    codexBackend.messages.set(session.championId, ['fresh reply']);
+    await store.updateSession(session.championId, {
+      lastAssistantMessages: ['stale cached reply'],
+      lastTurnStatus: 'completed',
+      codexTurnInProgress: false
+    });
+
+    await expect(manager.getLastAssistantTextBlocks(session.championId, 1)).resolves.toEqual(['fresh reply']);
+    expect(codexBackend.getLastAssistantMessagesCalls).toEqual([
+      {
+        championId: session.championId,
+        threadId: session.internalId,
+        count: 1
+      }
+    ]);
+  });
+
   it('reconnects on Codex wait when the store still shows a turn in progress', async () => {
     const session = await manager.createSession({
       cli: 'codex',

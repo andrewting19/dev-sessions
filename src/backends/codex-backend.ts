@@ -202,10 +202,12 @@ export class CodexBackend implements Backend {
   async getLastMessages(session: StoredSession, count: number): Promise<string[]> {
     const safeCount = Math.max(1, count);
     const sessionMessages = session.lastAssistantMessages ?? [];
-    if (sessionMessages.length > 0) {
+    const cacheMayBeStale = session.lastTurnStatus === 'completed';
+    if (!cacheMayBeStale && sessionMessages.length > 0) {
       return sessionMessages.slice(-safeCount);
     }
-    // Fall back to thread/read (works when session was loaded from store without wait being called)
+    // Read from thread history when the cache may be stale (e.g. completed turns observed out-of-band)
+    // or when the cache is empty (e.g. process restart).
     return this.raw.getLastAssistantMessages(session.championId, session.internalId, safeCount);
   }
 
