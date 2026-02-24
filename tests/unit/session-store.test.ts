@@ -112,4 +112,95 @@ describe('SessionStore', () => {
       warnSpy.mockRestore();
     }
   });
+
+  describe('concurrent access', () => {
+    it('parallel upserts do not lose sessions', async () => {
+      const ids = Array.from({ length: 20 }, (_, i) => `champ-${i}`);
+
+      await Promise.all(ids.map((id) => store.upsertSession(createSession(id))));
+
+      const sessions = await store.listSessions();
+      expect(sessions).toHaveLength(20);
+      const storedIds = sessions.map((s) => s.championId).sort();
+      expect(storedIds).toEqual(ids.sort());
+    });
+
+    it('parallel deletes do not wipe unrelated sessions', async () => {
+      // Seed 10 sessions
+      for (let i = 0; i < 10; i++) {
+        await store.upsertSession(createSession(`s-${i}`));
+      }
+
+      // Delete odd-numbered sessions in parallel
+      const toDelete = [1, 3, 5, 7, 9].map((i) => `s-${i}`);
+      await Promise.all(toDelete.map((id) => store.deleteSession(id)));
+
+      const remaining = await store.listSessions();
+      const remainingIds = remaining.map((s) => s.championId).sort();
+      expect(remainingIds).toEqual(['s-0', 's-2', 's-4', 's-6', 's-8']);
+    });
+
+    it('parallel updates do not overwrite each other', async () => {
+      await store.upsertSession(createSession('target'));
+      await store.upsertSession(createSession('bystander'));
+
+      // Run many concurrent updates to the same session
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          store.updateSession('target', {
+            description: `update-${i}`,
+            lastUsed: new Date(Date.now() + i).toISOString()
+          })
+        )
+      );
+
+      // Bystander should be untouched
+      const bystander = await store.getSession('bystander');
+      expect(bystander).toBeDefined();
+      expect(bystander!.championId).toBe('bystander');
+
+      // Target should exist with one of the updates applied
+      const target = await store.getSession('target');
+      expect(target).toBeDefined();
+      expect(target!.description).toMatch(/^update-\d$/);
+    });
+
+    it('mixed parallel creates and deletes are consistent', async () => {
+      // Pre-populate sessions that will be deleted
+      for (let i = 0; i < 5; i++) {
+        await store.upsertSession(createSession(`old-${i}`));
+      }
+
+      // Concurrently create new sessions and delete old ones
+      const ops: Promise<unknown>[] = [];
+      for (let i = 0; i < 5; i++) {
+        ops.push(store.upsertSession(createSession(`new-${i}`)));
+        ops.push(store.deleteSession(`old-${i}`));
+      }
+      await Promise.all(ops);
+
+      const sessions = await store.listSessions();
+      const ids = sessions.map((s) => s.championId).sort();
+
+      // All old sessions deleted, all new sessions present
+      for (let i = 0; i < 5; i++) {
+        expect(ids).not.toContain(`old-${i}`);
+        expect(ids).toContain(`new-${i}`);
+      }
+    });
+
+    it('multiple store instances sharing the same path serialize correctly', async () => {
+      const store2 = new SessionStore(storePath);
+
+      // Interleave operations across two store instances
+      await Promise.all([
+        store.upsertSession(createSession('from-store1')),
+        store2.upsertSession(createSession('from-store2'))
+      ]);
+
+      const sessions = await store.listSessions();
+      const ids = sessions.map((s) => s.championId).sort();
+      expect(ids).toEqual(['from-store1', 'from-store2']);
+    });
+  });
 });

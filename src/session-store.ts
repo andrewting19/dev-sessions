@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { StoredSession } from './types';
@@ -9,6 +9,9 @@ interface SessionStoreFile {
 }
 
 const CURRENT_VERSION = 1;
+const LOCK_TIMEOUT_MS = 10_000;
+const LOCK_RETRY_INTERVAL_MS = 20;
+const LOCK_STALE_MS = 30_000;
 
 function getDefaultStorePath(): string {
   return path.join(os.homedir(), '.dev-sessions', 'sessions.json');
@@ -47,8 +50,16 @@ function isStoredSession(value: unknown): value is StoredSession {
   );
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class SessionStore {
-  constructor(private readonly storePath: string = getDefaultStorePath()) {}
+  private readonly lockPath: string;
+
+  constructor(private readonly storePath: string = getDefaultStorePath()) {
+    this.lockPath = `${storePath}.lock`;
+  }
 
   get filePath(): string {
     return this.storePath;
@@ -65,51 +76,57 @@ export class SessionStore {
   }
 
   async upsertSession(session: StoredSession): Promise<void> {
-    const store = await this.readStore();
-    const index = store.sessions.findIndex((candidate) => candidate.championId === session.championId);
+    await this.withLock(async () => {
+      const store = await this.readStore();
+      const index = store.sessions.findIndex((candidate) => candidate.championId === session.championId);
 
-    if (index >= 0) {
-      store.sessions[index] = session;
-    } else {
-      store.sessions.push(session);
-    }
+      if (index >= 0) {
+        store.sessions[index] = session;
+      } else {
+        store.sessions.push(session);
+      }
 
-    await this.writeStore(store);
+      await this.writeStore(store);
+    });
   }
 
   async updateSession(
     championId: string,
     partial: Partial<Omit<StoredSession, 'championId'>>
   ): Promise<StoredSession | undefined> {
-    const store = await this.readStore();
-    const index = store.sessions.findIndex((candidate) => candidate.championId === championId);
+    return this.withLock(async () => {
+      const store = await this.readStore();
+      const index = store.sessions.findIndex((candidate) => candidate.championId === championId);
 
-    if (index < 0) {
-      return undefined;
-    }
+      if (index < 0) {
+        return undefined;
+      }
 
-    const updatedSession: StoredSession = {
-      ...store.sessions[index],
-      ...partial,
-      championId: store.sessions[index].championId
-    };
+      const updatedSession: StoredSession = {
+        ...store.sessions[index],
+        ...partial,
+        championId: store.sessions[index].championId
+      };
 
-    store.sessions[index] = updatedSession;
-    await this.writeStore(store);
-    return updatedSession;
+      store.sessions[index] = updatedSession;
+      await this.writeStore(store);
+      return updatedSession;
+    });
   }
 
   async deleteSession(championId: string): Promise<boolean> {
-    const store = await this.readStore();
-    const initialLength = store.sessions.length;
-    store.sessions = store.sessions.filter((candidate) => candidate.championId !== championId);
+    return this.withLock(async () => {
+      const store = await this.readStore();
+      const initialLength = store.sessions.length;
+      store.sessions = store.sessions.filter((candidate) => candidate.championId !== championId);
 
-    if (store.sessions.length === initialLength) {
-      return false;
-    }
+      if (store.sessions.length === initialLength) {
+        return false;
+      }
 
-    await this.writeStore(store);
-    return true;
+      await this.writeStore(store);
+      return true;
+    });
   }
 
   async pruneSessions(championIds: string[]): Promise<number> {
@@ -117,17 +134,69 @@ export class SessionStore {
       return 0;
     }
 
-    const ids = new Set(championIds);
-    const store = await this.readStore();
-    const initialLength = store.sessions.length;
-    store.sessions = store.sessions.filter((candidate) => !ids.has(candidate.championId));
-    const removed = initialLength - store.sessions.length;
+    return this.withLock(async () => {
+      const ids = new Set(championIds);
+      const store = await this.readStore();
+      const initialLength = store.sessions.length;
+      store.sessions = store.sessions.filter((candidate) => !ids.has(candidate.championId));
+      const removed = initialLength - store.sessions.length;
 
-    if (removed > 0) {
-      await this.writeStore(store);
+      if (removed > 0) {
+        await this.writeStore(store);
+      }
+
+      return removed;
+    });
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquireLock();
+    try {
+      return await fn();
+    } finally {
+      await this.releaseLock();
     }
+  }
 
-    return removed;
+  private async acquireLock(): Promise<void> {
+    await mkdir(path.dirname(this.storePath), { recursive: true });
+
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+
+    while (true) {
+      try {
+        await mkdir(this.lockPath);
+        return;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+      }
+
+      // Check for stale lock (e.g. process crashed while holding it)
+      try {
+        const lockStat = await stat(this.lockPath);
+        if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
+          await rm(this.lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // Lock dir vanished between our check — retry acquire
+        continue;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for session store lock at ${this.lockPath}`);
+      }
+
+      // Jittered retry to reduce contention
+      const jitter = Math.random() * LOCK_RETRY_INTERVAL_MS;
+      await sleep(LOCK_RETRY_INTERVAL_MS + jitter);
+    }
+  }
+
+  private async releaseLock(): Promise<void> {
+    await rm(this.lockPath, { recursive: true, force: true });
   }
 
   private async readStore(): Promise<SessionStoreFile> {
