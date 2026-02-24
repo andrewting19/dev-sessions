@@ -34,7 +34,7 @@ export interface Backend {
   readonly deadSessionPolicy: 'prune' | 'deactivate';
   isChampionIdTaken(championId: string): Promise<boolean>;
   create(options: BackendCreateOptions): Promise<BackendCreateResult>;
-  preSendStoreFields(session: StoredSession, sendTime: string): Partial<StoredSession>;
+  preSendStoreFields(session: StoredSession, sendTime: string): Partial<StoredSession> | Promise<Partial<StoredSession>>;
   send(session: StoredSession, message: string): Promise<Partial<StoredSession>>;
   onSendError(session: StoredSession, error: Error): Partial<StoredSession>;
   status(session: StoredSession): Promise<BackendStatusResult>;

@@ -286,50 +286,6 @@ describe('SessionManager', () => {
     expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
   });
 
-  it('completes via file-history-snapshot when turn ends without a system entry', async () => {
-    const session = await manager.createSession({
-      path: '/tmp/project-fhs',
-      mode: 'native'
-    });
-
-    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-fhs');
-    const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
-    await mkdir(transcriptDir, { recursive: true });
-    // Stale previous turn — no system entry yet.
-    await writeFile(
-      transcriptPath,
-      [
-        '{"type":"user","message":{"content":"old task"}}',
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"old done"}]}}'
-      ].join('\n'),
-      'utf8'
-    );
-
-    const waitPromise = manager.waitForSession(session.championId, {
-      timeoutSeconds: 2,
-      intervalSeconds: 0.05
-    });
-
-    setTimeout(() => {
-      void appendFile(transcriptPath, '\n{"type":"user","message":{"content":"new task"}}', 'utf8');
-    }, 20);
-
-    // New assistant + file-history-snapshot (no system) — matches long tool-run turn pattern.
-    setTimeout(() => {
-      void appendFile(
-        transcriptPath,
-        '\n{"type":"assistant","message":{"content":[{"type":"text","text":"new done"}]}}\n{"type":"file-history-snapshot","messageId":"x","snapshot":{},"isSnapshotUpdate":false}',
-        'utf8'
-      );
-    }, 120);
-
-    const result = await waitPromise;
-
-    expect(result.completed).toBe(true);
-    expect(result.timedOut).toBe(false);
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
-  });
-
   it('does not complete early when stale transcript already has an assistant entry', async () => {
     const session = await manager.createSession({
       path: '/tmp/project-stale',
@@ -350,6 +306,9 @@ describe('SessionManager', () => {
       ].join('\n'),
       'utf8'
     );
+
+    // Simulate what send() would have done: snapshot the system count before sending.
+    await store.updateSession(session.championId, { claudeSystemCountAtSend: 1 });
 
     const result = await manager.waitForSession(session.championId, {
       timeoutSeconds: 0.2,

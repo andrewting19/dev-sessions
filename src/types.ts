@@ -25,6 +25,7 @@ export interface StoredSession {
   lastTurnStatus?: CodexTurnStatus;
   lastTurnError?: string;
   lastAssistantMessages?: string[];
+  claudeSystemCountAtSend?: number;
   createdAt: string;
   lastUsed: string;
 }

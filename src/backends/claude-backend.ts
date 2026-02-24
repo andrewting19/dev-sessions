@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { toTmuxSessionName } from '../champion-ids';
 import {
-  countAssistantMessages,
-  countFileHistorySnapshots,
   countSystemEntries,
   extractTextBlocks,
   getAssistantTextBlocks,
@@ -33,8 +31,16 @@ export class ClaudeBackend implements Backend {
     return { internalId, mode };
   }
 
-  preSendStoreFields(_session: StoredSession, _sendTime: string): Partial<StoredSession> {
-    return {};
+  async preSendStoreFields(session: StoredSession, _sendTime: string): Promise<Partial<StoredSession>> {
+    // Snapshot the current system entry count so wait() knows the baseline
+    // even if it starts after the turn has already completed.
+    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
+    try {
+      const entries = await readClaudeTranscript(transcriptPath);
+      return { claudeSystemCountAtSend: countSystemEntries(entries) };
+    } catch {
+      return { claudeSystemCountAtSend: 0 };
+    }
   }
 
   async send(session: StoredSession, message: string): Promise<Partial<StoredSession>> {
@@ -62,18 +68,34 @@ export class ClaudeBackend implements Backend {
 
   async wait(session: StoredSession, timeoutMs: number, intervalMs: number): Promise<BackendWaitResult> {
     const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
+    const tmuxSessionName = toTmuxSessionName(session.championId);
     const startTime = Date.now();
     const deadline = startTime + timeoutMs;
-    const initialEntries = await readClaudeTranscript(transcriptPath);
-    const baselineAssistantCount = countAssistantMessages(initialEntries);
-    const baselineSystemCount = countSystemEntries(initialEntries);
-    const baselineFileHistoryCount = countFileHistorySnapshots(initialEntries);
+    // Use the system entry count snapshotted at send time as the baseline.
+    // This way wait() detects completion even if the turn finishes before wait starts.
+    const baselineSystemCount = session.claudeSystemCountAtSend ?? 0;
 
     let lastMtimeMs = -1;
     let shouldReadTranscript = false;
-    let cachedEntries: Awaited<ReturnType<typeof readClaudeTranscript>> = initialEntries;
+    let cachedEntries: Awaited<ReturnType<typeof readClaudeTranscript>> = [];
+    let pollCount = 0;
 
     while (Date.now() <= deadline) {
+      // Periodically check if the tmux session is still alive (every 10th poll).
+      if (pollCount > 0 && pollCount % 10 === 0) {
+        const liveness = await this.raw.sessionExists(tmuxSessionName);
+        if (liveness === 'dead') {
+          return {
+            completed: false,
+            timedOut: false,
+            elapsedMs: Date.now() - startTime,
+            storeUpdate: { status: 'inactive', lastTurnError: 'tmux session died during wait' },
+            errorToThrow: new Error('tmux session died during wait')
+          };
+        }
+      }
+      pollCount++;
+
       try {
         const fileStat = await stat(transcriptPath);
         if (fileStat.mtimeMs !== lastMtimeMs) {
@@ -93,23 +115,12 @@ export class ClaudeBackend implements Backend {
         shouldReadTranscript = false;
       }
 
-      const hasNewAssistant = countAssistantMessages(cachedEntries) > baselineAssistantCount;
-      const hasNewSystemEntry = countSystemEntries(cachedEntries) > baselineSystemCount;
-      const hasNewFileHistorySnapshot = countFileHistorySnapshots(cachedEntries) > baselineFileHistoryCount;
-
-      // A system entry followed by a new assistant message is the primary completion signal.
-      if (hasNewSystemEntry && hasNewAssistant) {
-        return {
-          completed: true,
-          timedOut: false,
-          elapsedMs: Date.now() - startTime,
-          storeUpdate: { lastUsed: new Date().toISOString() }
-        };
-      }
-
-      // For turns that end without a system entry (e.g. long tool runs), Claude writes a
-      // file-history-snapshot at turn completion. Use that as the fallback signal.
-      if (hasNewFileHistorySnapshot && hasNewAssistant) {
+      // A system entry is the definitive turn-completion signal — Claude writes it only
+      // when the agent fully finishes (never mid-turn during tool calls).
+      // Compare against the baseline from send time so we detect completion even if
+      // the turn finishes before wait starts.
+      const currentSystemCount = countSystemEntries(cachedEntries);
+      if (currentSystemCount > baselineSystemCount) {
         return {
           completed: true,
           timedOut: false,

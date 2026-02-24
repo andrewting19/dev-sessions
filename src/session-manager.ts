@@ -85,7 +85,7 @@ export class SessionManager {
     const backend = this.getBackend(session.cli);
     const sendTime = new Date().toISOString();
 
-    const preSendFields = backend.preSendStoreFields(session, sendTime);
+    const preSendFields = await backend.preSendStoreFields(session, sendTime);
     if (Object.keys(preSendFields).length > 0) {
       await this.store.updateSession(championId, preSendFields);
     }
