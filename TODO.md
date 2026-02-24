@@ -101,10 +101,8 @@
 
 ### Medium Priority
 
-#### Session store locking (#2/#3) — HIGH PRIORITY
-**Why:** Concurrent CLI invocations do read-modify-write on `~/.dev-sessions/sessions.json` with no locking. Parallel `kill` calls in a loop have been observed wiping unrelated sessions from the store (confirmed in practice). Two parallel `create` calls can also pick the same champion ID.
-**What:** Migrate store to SQLite — solves locking, atomicity, and query performance in one go. File locking (e.g. `proper-lockfile`) is a lower-effort alternative but doesn't fix all races.
-**Files:** `src/session-store.ts`
+#### ~~Session store locking (#2/#3)~~ ✅
+File-based locking added to `SessionStore` via atomic `mkdir` lock primitive. All read-modify-write operations (`upsertSession`, `updateSession`, `deleteSession`, `pruneSessions`) are serialized through `withLock()`. Stale lock recovery (30s timeout) prevents deadlocks from crashed processes. Concurrency tests added covering parallel upserts, deletes, updates, mixed operations, and cross-instance access.
 
 #### Orphaned resources on store failure (#8)
 **Why:** External resources (tmux session, Codex thread) are created before store persistence. If `upsertSession()` fails, the session/thread is created but untracked — orphaned forever.

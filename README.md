@@ -129,7 +129,7 @@ Sessions get human-readable IDs like `fizz-top`, `riven-jg` (League of Legends c
 
 ### Session Store
 
-Persisted at `~/.dev-sessions/sessions.json`. No cross-process locking — avoid concurrent `create` calls (tracked in TODO.md).
+Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-based locking (`mkdir` as atomic primitive) to serialize concurrent access.
 
 ---
 
@@ -201,7 +201,7 @@ Spawns Claude inside Docker via a `clauded` binary on the host. See [claude-ting
 
 - **Codex ignores `--mode`**: Always runs with `approvalPolicy: never` / full access regardless of mode flag.
 - **`docker` mode is Claude-only**: Codex + Docker not implemented.
-- **Session store has no locking**: Concurrent `create` calls can race. Avoid for now.
+- **Session store uses file locking**: Concurrent operations are serialized via lockfile. A crashed process holding the lock is auto-recovered after 30 seconds.
 - **Gateway port conflict**: Default port 6767 can conflict with Docker. Use `DEV_SESSIONS_GATEWAY_PORT` to override.
 - **No `respond` command**: No structured way to respond to `waiting_for_input` sessions. Only matters for non-native modes.
 - **Claude permission prompts undetectable**: TUI-level prompts aren't written to JSONL — `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
