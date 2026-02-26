@@ -22,12 +22,24 @@ export function getGatewayLogPath(homeDir: string = os.homedir()): string {
   return path.join(homeDir, '.dev-sessions', 'gateway.log');
 }
 
-export function buildLaunchdPlist(binaryPath: string, port: number, logPath: string, nodePath?: string): string {
+export function buildLaunchdPlist(
+  binaryPath: string,
+  port: number,
+  logPath: string,
+  nodePath?: string,
+  userPath?: string
+): string {
   // launchd runs with a minimal PATH that won't find NVM-managed node.
   // If nodePath is provided, invoke node explicitly so the shebang is bypassed.
   const programArgs = nodePath
     ? `    <string>${nodePath}</string>\n    <string>${binaryPath}</string>`
     : `    <string>${binaryPath}</string>`;
+
+  // Capture the user's PATH at install time so the daemon (and its child processes)
+  // can find tmux, claude, clauded, git, and other tools.
+  const pathEntry = userPath
+    ? `    <key>PATH</key>\n    <string>${userPath}</string>\n`
+    : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -46,7 +58,7 @@ ${programArgs}
   <dict>
     <key>DEV_SESSIONS_GATEWAY_PORT</key>
     <string>${port}</string>
-  </dict>
+${pathEntry}  </dict>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
@@ -60,10 +72,18 @@ ${programArgs}
 `;
 }
 
-export function buildSystemdUnit(binaryPath: string, port: number, logPath: string, nodePath?: string): string {
+export function buildSystemdUnit(
+  binaryPath: string,
+  port: number,
+  logPath: string,
+  nodePath?: string,
+  userPath?: string
+): string {
   const execStart = nodePath
     ? `${nodePath} ${binaryPath} gateway --port ${port}`
     : `${binaryPath} gateway --port ${port}`;
+
+  const pathLine = userPath ? `\nEnvironment=PATH=${userPath}` : '';
 
   return `[Unit]
 Description=dev-sessions gateway HTTP server
@@ -71,7 +91,7 @@ After=network.target
 
 [Service]
 ExecStart=${execStart}
-Environment=DEV_SESSIONS_GATEWAY_PORT=${port}
+Environment=DEV_SESSIONS_GATEWAY_PORT=${port}${pathLine}
 Restart=on-failure
 StandardOutput=append:${logPath}
 StandardError=append:${logPath}
@@ -87,6 +107,7 @@ export async function installGatewayDaemon(options: {
   platform?: string;
   homeDir?: string;
   nodePath?: string;
+  userPath?: string;
 } = {}): Promise<void> {
   const homeDir = options.homeDir ?? os.homedir();
   const platform = options.platform ?? process.platform;
@@ -95,12 +116,14 @@ export async function installGatewayDaemon(options: {
   const logPath = getGatewayLogPath(homeDir);
   // Resolve node binary so launchd/systemd can find it regardless of PATH.
   const nodePath = options.nodePath ?? process.execPath;
+  // Capture the user's PATH at install time so the daemon can find tmux, claude, etc.
+  const userPath = options.userPath ?? process.env.PATH;
 
   await mkdir(path.dirname(logPath), { recursive: true });
 
   if (platform === 'darwin') {
     const plistPath = getLaunchdPlistPath(homeDir);
-    const plistContent = buildLaunchdPlist(binaryPath, port, logPath, nodePath);
+    const plistContent = buildLaunchdPlist(binaryPath, port, logPath, nodePath, userPath);
     await mkdir(path.dirname(plistPath), { recursive: true });
     await writeFile(plistPath, plistContent, 'utf8');
 
@@ -117,7 +140,7 @@ export async function installGatewayDaemon(options: {
 
   if (platform === 'linux') {
     const unitPath = getSystemdUnitPath(homeDir);
-    const unitContent = buildSystemdUnit(binaryPath, port, logPath, nodePath);
+    const unitContent = buildSystemdUnit(binaryPath, port, logPath, nodePath, userPath);
     await mkdir(path.dirname(unitPath), { recursive: true });
     await writeFile(unitPath, unitContent, 'utf8');
     await execFileAsync('systemctl', ['--user', 'daemon-reload']);

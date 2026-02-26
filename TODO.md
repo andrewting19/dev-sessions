@@ -157,6 +157,19 @@ File-based locking added to `SessionStore` via atomic `mkdir` lock primitive. Al
 - [ ] Version strings — source from `package.json` in one place (currently duplicated in cli.ts and codex clientInfo)
 
 ### Future
+
+#### Replace Claude tmux backend with `--sdk-url` WebSocket protocol
+**Why:** `claude-tmux.ts` is the most brittle part of the system — tmux send-keys with base64 encoding, hardcoded sleep delays, JSONL transcript polling, ps-based liveness detection. All replaceable.
+
+**How:** Claude Code accepts `--sdk-url ws://HOST:PORT/PATH`. The CLI connects back as a WebSocket client and speaks NDJSON. Messages include `system/init`, `assistant` (streaming), `result` (turn complete with cost/tokens/stop reason), and `control_request` (auto-approve). Server sends `user` (prompt), `control_response`, and `control_request/interrupt`. This gives push-based status, structured turn results, prompt queuing, and interrupt support — no tmux, no transcript parsing, no polling.
+
+**Quirk:** CLI waits for a `user` message BEFORE sending `system/init`. Must send queued prompt on WebSocket open before waiting for init.
+
+**Reference:** `andrewting19/cc-api` — single-file Bun implementation of this protocol (~500 LOC). Demonstrates full session lifecycle. Would need porting from Bun to Node (`ws` package), stripping the OpenClaw callback, and wiring into existing `Backend` interface + `SessionStore`.
+
+**Replaces:** `claude-tmux.ts`, `transcript/claude-parser.ts`, transcript-based `wait` logic.
+**Risk:** `--sdk-url` is undocumented. Keep tmux backend as fallback initially.
+
 - [ ] Session groups (named collections for fan-out workflows)
 - [ ] Codex Docker support (`codexed` + tmux + transcript parsing) — P2
 - [ ] Mid-turn steerability — explicit `send --interrupt` or `send --queue` flags once `send` is non-blocking

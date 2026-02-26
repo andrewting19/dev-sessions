@@ -168,23 +168,43 @@ export function resolveGatewayCliBinary(
   return DEFAULT_GATEWAY_CLI_BINARY;
 }
 
+// Ensure the node binary directory is on PATH for child processes.
+// The daemon plist/systemd unit captures the user's full PATH at install time,
+// but this is a safety net for manual `dev-sessions gateway` runs.
+function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const nodeBinDir = path.dirname(process.execPath);
+  const currentPath = baseEnv.PATH ?? '';
+  const pathParts = currentPath.split(':').filter((p) => p.length > 0);
+  if (!pathParts.includes(nodeBinDir)) {
+    pathParts.unshift(nodeBinDir);
+  }
+  return {
+    ...baseEnv,
+    PATH: pathParts.join(':'),
+    IS_SANDBOX: '0',
+    DEV_SESSIONS_GATEWAY_URL: ''
+  };
+}
+
 export function createGatewayCommandExecutor(
-  cliBinary: string = resolveGatewayCliBinary()
+  cliBinary: string = resolveGatewayCliBinary(),
+  nodeBinary: string = process.execPath
 ): GatewayCommandExecutor {
+  const env = buildGatewayEnv();
   return async (args: string[]): Promise<GatewayCommandResult> => {
+    // Invoke the CLI script via node explicitly so the shebang (#!/usr/bin/env node)
+    // is bypassed. launchd/systemd environments have a minimal PATH that won't
+    // find NVM-managed node, causing "env: node: No such file or directory".
+    const fullArgs = [cliBinary, ...args];
     try {
-      const { stdout, stderr } = await execFileAsync(cliBinary, args, {
+      const { stdout, stderr } = await execFileAsync(nodeBinary, fullArgs, {
         encoding: 'utf8',
         maxBuffer: 1024 * 1024 * 4,
-        env: {
-          ...process.env,
-          IS_SANDBOX: '0',
-          DEV_SESSIONS_GATEWAY_URL: ''
-        }
+        env
       });
 
       return {
-        command: [cliBinary, ...args],
+        command: [nodeBinary, ...fullArgs],
         stdout,
         stderr,
         exitCode: 0
@@ -206,7 +226,7 @@ export function createGatewayCommandExecutor(
         : candidate.message;
 
       throw new GatewayCommandError(`Command failed: ${cliBinary} ${args.join(' ')}`.trim(), {
-        command: [cliBinary, ...args],
+        command: [nodeBinary, ...fullArgs],
         stdout: typeof candidate.stdout === 'string' ? candidate.stdout : '',
         stderr,
         exitCode

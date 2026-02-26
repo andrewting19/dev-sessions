@@ -77,7 +77,7 @@ describe('gateway CLI resolution', () => {
         ok: true,
         sessions: [],
         output: expect.objectContaining({
-          command: [cliPath, 'list', '--json']
+          command: [process.execPath, cliPath, 'list', '--json']
         })
       })
     );
