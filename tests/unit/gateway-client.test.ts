@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GatewaySessionManager } from '../../src/gateway/client';
+import { GatewaySessionManager, translateContainerPath } from '../../src/gateway/client';
 import { StoredSession } from '../../src/types';
 
 function jsonResponse(status: number, payload: unknown): Response {
@@ -158,6 +158,40 @@ describe('GatewaySessionManager', () => {
     expect(fetchSpy.mock.calls[2][0]).toBe('http://gateway.test:6767/status?id=fizz-top');
     expect(fetchSpy.mock.calls[3][0]).toBe('http://gateway.test:6767/last-message?id=fizz-top&n=2');
     expect(fetchSpy.mock.calls[4][0]).toBe('http://gateway.test:6767/kill');
+  });
+
+  it('translates container paths to host paths when IS_SANDBOX=1', () => {
+    const env = {
+      IS_SANDBOX: '1',
+      HOST_PATH: '/Users/andrew/project'
+    } as NodeJS.ProcessEnv;
+
+    // /workspace → HOST_PATH
+    expect(translateContainerPath('/workspace', env)).toBe('/Users/andrew/project');
+
+    // /workspace/subdir → HOST_PATH/subdir
+    expect(translateContainerPath('/workspace/src/index.ts', env)).toBe('/Users/andrew/project/src/index.ts');
+
+    // Non-workspace path passes through
+    expect(translateContainerPath('/tmp/other', env)).toBe('/tmp/other');
+
+    // Without IS_SANDBOX, no translation
+    expect(translateContainerPath('/workspace', { ...env, IS_SANDBOX: '0' })).toBe('/workspace');
+
+    // Without HOST_PATH, no translation
+    expect(translateContainerPath('/workspace', { IS_SANDBOX: '1' } as NodeJS.ProcessEnv)).toBe('/workspace');
+  });
+
+  it('translates paths with custom CONTAINER_WORKSPACE', () => {
+    const env = {
+      IS_SANDBOX: '1',
+      HOST_PATH: '/Users/andrew/project',
+      CONTAINER_WORKSPACE: '/app'
+    } as NodeJS.ProcessEnv;
+
+    expect(translateContainerPath('/app', env)).toBe('/Users/andrew/project');
+    expect(translateContainerPath('/app/src', env)).toBe('/Users/andrew/project/src');
+    expect(translateContainerPath('/workspace', env)).toBe('/workspace');
   });
 
   it('adds gateway URL and startup hint for fetch/network failures', async () => {

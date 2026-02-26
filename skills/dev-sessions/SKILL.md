@@ -45,8 +45,13 @@ kill     <id>
 ## Key Flags
 
 - `--mode native` (default) — runs with `--dangerously-skip-permissions`, auto-approves all tool calls. **Always use for unattended delegation.**
-- `--path` — defaults to your CWD. Set explicitly when delegating to a different repo.
+- `--mode docker` — spawns the agent in a new Docker container on the host.
+- `--path` — defaults to your CWD. Set explicitly when delegating to a different repo. **Inside Docker:** container paths (e.g. `/workspace/subdir`) are automatically translated to the corresponding host path — no need to know host-side paths.
 - `-q` on `create` — prints only the champion ID, ideal for `sid=$(...)` capture.
+
+## Docker Note
+
+When running inside a Docker container, all commands are transparently relayed to the host via the gateway. Sessions spawn on the host (or in new containers via `--mode docker`), and you interact with them the same way. Container paths under `/workspace` are auto-mapped to the host project directory — just use paths as you see them locally.
 
 ## Handling `waiting_for_input`
 

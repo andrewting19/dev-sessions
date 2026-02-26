@@ -2,6 +2,7 @@ import path from 'node:path';
 import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from '../types';
 
 const DEFAULT_GATEWAY_BASE_URL = 'http://host.docker.internal:6767';
+const DEFAULT_CONTAINER_WORKSPACE = '/workspace';
 
 interface CreateSessionOptions {
   path?: string;
@@ -55,6 +56,35 @@ export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv = process.env): str
   return DEFAULT_GATEWAY_BASE_URL;
 }
 
+/**
+ * Translate a container-local path to the corresponding host path.
+ * Inside Docker, /workspace maps to HOST_PATH on the host. An agent that passes
+ * --path /workspace/subdir needs that translated to HOST_PATH/subdir before the
+ * gateway forwards the command to the host.
+ */
+export function translateContainerPath(
+  containerPath: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const hostPath = env.HOST_PATH;
+  if (env.IS_SANDBOX !== '1' || typeof hostPath !== 'string' || hostPath.trim().length === 0) {
+    return containerPath;
+  }
+
+  const containerWorkspace = (env.CONTAINER_WORKSPACE ?? DEFAULT_CONTAINER_WORKSPACE).replace(/\/+$/, '');
+  const resolved = path.resolve(containerPath);
+
+  if (resolved === containerWorkspace) {
+    return hostPath;
+  }
+
+  if (resolved.startsWith(containerWorkspace + '/')) {
+    return path.join(hostPath, resolved.slice(containerWorkspace.length));
+  }
+
+  return containerPath;
+}
+
 export class GatewaySessionManager {
   private readonly baseUrl: string;
 
@@ -67,7 +97,7 @@ export class GatewaySessionManager {
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
     const payload: Record<string, unknown> = {
-      path: path.resolve(options.path ?? process.cwd()),
+      path: translateContainerPath(path.resolve(options.path ?? process.cwd())),
       cli: options.cli ?? 'claude',
       mode: options.mode ?? 'native'
     };
