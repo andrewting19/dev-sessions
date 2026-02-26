@@ -179,7 +179,16 @@ When running inside a Docker container (detected via `IS_SANDBOX=1`), the CLI au
 **Setup:**
 1. On the host: `dev-sessions gateway install` (or manually `dev-sessions gateway --port 6767`)
 2. Inside Docker, set `DEV_SESSIONS_GATEWAY_URL=http://host.docker.internal:6767`
-3. Set `HOST_PATH` to map the container workspace path to the host path
+3. Set `HOST_PATH` to the host-side project path (e.g. `/Users/you/project`)
+
+**Path translation:** Container paths are automatically mapped to host paths. When an agent inside Docker passes `--path /workspace/subdir`, it's translated to `HOST_PATH/subdir` before being sent to the gateway. This means agents can use paths as they see them locally without knowing the host filesystem layout.
+
+| Environment Variable | Default | Purpose |
+|---|---|---|
+| `IS_SANDBOX` | — | Set to `1` to enable gateway mode |
+| `HOST_PATH` | — | Host-side path that `/workspace` maps to |
+| `CONTAINER_WORKSPACE` | `/workspace` | Container mount point (override if using a different mount path) |
+| `DEV_SESSIONS_GATEWAY_URL` | `http://host.docker.internal:6767` | Gateway endpoint |
 
 The gateway binds to `127.0.0.1` only — not exposed beyond loopback.
 
