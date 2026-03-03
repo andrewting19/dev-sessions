@@ -7,10 +7,10 @@ import {
 } from '../../src/session-manager';
 
 describe('session manager factory', () => {
-  it('uses gateway mode when IS_SANDBOX=1', () => {
+  it('uses gateway mode when DEV_SESSIONS_SANDBOX=1', () => {
     const env = {
       ...process.env,
-      IS_SANDBOX: '1',
+      DEV_SESSIONS_SANDBOX: '1',
       DEV_SESSIONS_GATEWAY_URL: 'http://gateway.internal:6767'
     };
 
@@ -19,11 +19,11 @@ describe('session manager factory', () => {
     expect(manager).toBeInstanceOf(GatewaySessionManager);
   });
 
-  it('uses local mode when IS_SANDBOX is not set', () => {
+  it('uses local mode when DEV_SESSIONS_SANDBOX is not set', () => {
     const env = {
       ...process.env
     };
-    delete env.IS_SANDBOX;
+    delete env.DEV_SESSIONS_SANDBOX;
 
     expect(shouldUseGatewaySessionManager(env)).toBe(false);
     const manager = createDefaultSessionManager(env);

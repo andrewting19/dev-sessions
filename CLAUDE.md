@@ -46,7 +46,7 @@ src/
     claude-parser.ts     # Parses Claude JSONL transcripts
   gateway/
     server.ts            # Express HTTP relay (Docker → host)
-    client.ts            # Gateway client (used when IS_SANDBOX=1)
+    client.ts            # Gateway client (used when DEV_SESSIONS_SANDBOX=1)
     daemon.ts            # launchd/systemd install/uninstall/status
 skills/
   dev-sessions/SKILL.md  # /dev-sessions skill

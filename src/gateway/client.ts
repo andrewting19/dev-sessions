@@ -67,7 +67,7 @@ export function translateContainerPath(
   env: NodeJS.ProcessEnv = process.env
 ): string {
   const hostPath = env.HOST_PATH;
-  if (env.IS_SANDBOX !== '1' || typeof hostPath !== 'string' || hostPath.trim().length === 0) {
+  if (env.DEV_SESSIONS_SANDBOX !== '1' || typeof hostPath !== 'string' || hostPath.trim().length === 0) {
     return containerPath;
   }
 

@@ -254,7 +254,7 @@ export class SessionManager {
 }
 
 export function shouldUseGatewaySessionManager(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.IS_SANDBOX === '1';
+  return env.DEV_SESSIONS_SANDBOX === '1';
 }
 
 export function createDefaultSessionManager(

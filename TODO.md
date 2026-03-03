@@ -20,7 +20,7 @@
 
 ### Phase 2b: Docker Gateway ✅
 - [x] Thin HTTP relay gateway (`dev-sessions gateway --port <port>`)
-- [x] CLI auto-detection: `IS_SANDBOX=1` → route through gateway
+- [x] CLI auto-detection: `DEV_SESSIONS_SANDBOX=1` → route through gateway
 - [x] `HOST_PATH` mapping for transcript resolution
 - [x] Gateway as subcommand (no separate install needed)
 - [x] Gateway binary resolution — resolves path from `process.argv[1]`

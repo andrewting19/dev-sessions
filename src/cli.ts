@@ -82,7 +82,7 @@ function parsePositiveNumber(raw: string, flagName: string): number {
 }
 
 function getDefaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.IS_SANDBOX === '1' && typeof env.HOST_PATH === 'string' && env.HOST_PATH.trim().length > 0) {
+  if (env.DEV_SESSIONS_SANDBOX === '1' && typeof env.HOST_PATH === 'string' && env.HOST_PATH.trim().length > 0) {
     return env.HOST_PATH;
   }
 

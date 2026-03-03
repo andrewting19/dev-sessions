@@ -160,9 +160,9 @@ describe('GatewaySessionManager', () => {
     expect(fetchSpy.mock.calls[4][0]).toBe('http://gateway.test:6767/kill');
   });
 
-  it('translates container paths to host paths when IS_SANDBOX=1', () => {
+  it('translates container paths to host paths when DEV_SESSIONS_SANDBOX=1', () => {
     const env = {
-      IS_SANDBOX: '1',
+      DEV_SESSIONS_SANDBOX: '1',
       HOST_PATH: '/Users/andrew/project'
     } as NodeJS.ProcessEnv;
 
@@ -175,16 +175,16 @@ describe('GatewaySessionManager', () => {
     // Non-workspace path passes through
     expect(translateContainerPath('/tmp/other', env)).toBe('/tmp/other');
 
-    // Without IS_SANDBOX, no translation
-    expect(translateContainerPath('/workspace', { ...env, IS_SANDBOX: '0' })).toBe('/workspace');
+    // Without DEV_SESSIONS_SANDBOX, no translation
+    expect(translateContainerPath('/workspace', { ...env, DEV_SESSIONS_SANDBOX: '0' })).toBe('/workspace');
 
     // Without HOST_PATH, no translation
-    expect(translateContainerPath('/workspace', { IS_SANDBOX: '1' } as NodeJS.ProcessEnv)).toBe('/workspace');
+    expect(translateContainerPath('/workspace', { DEV_SESSIONS_SANDBOX: '1' } as NodeJS.ProcessEnv)).toBe('/workspace');
   });
 
   it('translates paths with custom CONTAINER_WORKSPACE', () => {
     const env = {
-      IS_SANDBOX: '1',
+      DEV_SESSIONS_SANDBOX: '1',
       HOST_PATH: '/Users/andrew/project',
       CONTAINER_WORKSPACE: '/app'
     } as NodeJS.ProcessEnv;

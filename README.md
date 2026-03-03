@@ -174,7 +174,7 @@ create  →  send  →  [wait / poll status]  →  last-message  →  kill
 
 ### Running FROM inside a container
 
-When running inside a Docker container (detected via `IS_SANDBOX=1`), the CLI automatically routes all commands through an HTTP gateway relay on the host.
+When running inside a Docker container (detected via `DEV_SESSIONS_SANDBOX=1`), the CLI automatically routes all commands through an HTTP gateway relay on the host.
 
 **Setup:**
 1. On the host: `dev-sessions gateway install` (or manually `dev-sessions gateway --port 6767`)
@@ -185,7 +185,7 @@ When running inside a Docker container (detected via `IS_SANDBOX=1`), the CLI au
 
 | Environment Variable | Default | Purpose |
 |---|---|---|
-| `IS_SANDBOX` | — | Set to `1` to enable gateway mode |
+| `DEV_SESSIONS_SANDBOX` | — | Set to `1` to enable gateway mode |
 | `HOST_PATH` | — | Host-side path that `/workspace` maps to |
 | `CONTAINER_WORKSPACE` | `/workspace` | Container mount point (override if using a different mount path) |
 | `DEV_SESSIONS_GATEWAY_URL` | `http://host.docker.internal:6767` | Gateway endpoint |

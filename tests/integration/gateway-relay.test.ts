@@ -180,7 +180,7 @@ describe('gateway relay integration', () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: context.homeDir,
-      IS_SANDBOX: '1',
+      DEV_SESSIONS_SANDBOX: '1',
       HOST_PATH: '/host/project',
       DEV_SESSIONS_GATEWAY_URL: context.baseUrl
     };
@@ -316,7 +316,7 @@ describe('gateway relay integration', () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: context.homeDir,
-      IS_SANDBOX: '1',
+      DEV_SESSIONS_SANDBOX: '1',
       HOST_PATH: '/host/project',
       DEV_SESSIONS_GATEWAY_URL: context.baseUrl
     };

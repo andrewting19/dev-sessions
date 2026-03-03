@@ -152,9 +152,9 @@ describe('CLI argument parsing', () => {
   });
 
   it('defaults create path to HOST_PATH when running in sandbox mode', async () => {
-    const previousSandbox = process.env.IS_SANDBOX;
+    const previousSandbox = process.env.DEV_SESSIONS_SANDBOX;
     const previousHostPath = process.env.HOST_PATH;
-    process.env.IS_SANDBOX = '1';
+    process.env.DEV_SESSIONS_SANDBOX = '1';
     process.env.HOST_PATH = '/host/workspace';
 
     try {
@@ -172,9 +172,9 @@ describe('CLI argument parsing', () => {
       });
     } finally {
       if (previousSandbox === undefined) {
-        delete process.env.IS_SANDBOX;
+        delete process.env.DEV_SESSIONS_SANDBOX;
       } else {
-        process.env.IS_SANDBOX = previousSandbox;
+        process.env.DEV_SESSIONS_SANDBOX = previousSandbox;
       }
 
       if (previousHostPath === undefined) {
