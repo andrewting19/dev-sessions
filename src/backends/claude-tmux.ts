@@ -166,7 +166,7 @@ export class ClaudeTmuxBackend {
       commandParts.push('--dangerously-skip-permissions');
     }
 
-    return `unset CLAUDECODE; cd ${shellEscape(workspacePath)} && ${commandParts.join(' ')}`;
+    return `unset CLAUDECODE; export IS_SANDBOX=1; cd ${shellEscape(workspacePath)} && ${commandParts.join(' ')}`;
   }
 
   private async waitForTranscriptReady(

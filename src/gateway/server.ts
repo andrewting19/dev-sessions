@@ -183,7 +183,8 @@ function buildGatewayEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.Proce
     PATH: pathParts.join(':'),
     DEV_SESSIONS_SANDBOX: '0',
     DEV_SESSIONS_GATEWAY_URL: '',
-    CLAUDECODE: ''
+    CLAUDECODE: '',
+    IS_SANDBOX: '1'
   };
 }
 
