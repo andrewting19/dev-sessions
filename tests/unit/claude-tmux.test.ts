@@ -54,7 +54,7 @@ describe('ClaudeTmuxBackend', () => {
         'dev-fizz-top',
         'bash',
         '-lc',
-        "cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
+        "unset CLAUDECODE; cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
       ],
       expect.any(Object),
       expect.any(Function)
@@ -77,7 +77,7 @@ describe('ClaudeTmuxBackend', () => {
         'dev-riven-jg',
         'bash',
         '-lc',
-        "cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
+        "unset CLAUDECODE; cd '/tmp/workspace' && claude --session-id 'uuid-native' --dangerously-skip-permissions"
       ],
       expect.any(Object),
       expect.any(Function)
@@ -112,7 +112,7 @@ describe('ClaudeTmuxBackend', () => {
         'dev-ahri-mid',
         'bash',
         '-lc',
-        "cd '/tmp/workspace' && clauded --session-id 'uuid-docker'"
+        "unset CLAUDECODE; cd '/tmp/workspace' && clauded --session-id 'uuid-docker'"
       ],
       expect.any(Object),
       expect.any(Function)
