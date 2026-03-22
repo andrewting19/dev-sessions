@@ -245,7 +245,7 @@ export class GatewaySessionManager {
       throw error;
     }
 
-    const rawBody = await response.text();
+    const rawBody = (await response.text()).trim();
     let payload: Record<string, unknown> = {};
     if (rawBody.length > 0) {
       try {

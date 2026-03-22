@@ -13,6 +13,10 @@ const DEFAULT_GATEWAY_CLI_BINARY = 'dev-sessions';
 const ALLOWED_CLIS: SessionCli[] = ['claude', 'codex'];
 const ALLOWED_MODES: SessionMode[] = ['native', 'docker'];
 
+// Node/undici fetch has a default headersTimeout and bodyTimeout of 300s.
+// Send keepalive newlines at this interval to prevent both from firing on long waits.
+export const WAIT_KEEPALIVE_INTERVAL_MS = 30_000;
+
 export interface GatewayCommandResult {
   command: string[];
   stdout: string;
@@ -407,6 +411,7 @@ export function createGatewayApp(
   app.get('/wait', async (req: Request, res: Response) => {
     let timeoutSeconds = 300;
     let intervalSeconds: number | undefined;
+    let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
     try {
       const sessionId = ensureNonEmptyString(req.query.id, 'id');
       timeoutSeconds = parsePositiveIntegerQuery(req.query.timeout, 300, 'timeout');
@@ -419,10 +424,21 @@ export function createGatewayApp(
         args.push('--interval', String(intervalSeconds));
       }
 
+      // Flush headers immediately so the client's fetch headersTimeout (default 300s
+      // in Node/undici) is satisfied. Then send periodic keepalive newlines to prevent
+      // bodyTimeout from firing during long waits.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      keepaliveTimer = setInterval(() => {
+        if (!res.writableEnded) {
+          res.write('\n');
+        }
+      }, WAIT_KEEPALIVE_INTERVAL_MS);
+
       const startTime = Date.now();
       try {
         const result = await executeCommand(args);
-        res.json({
+        clearInterval(keepaliveTimer);
+        res.end(JSON.stringify({
           ok: true,
           waitResult: {
             completed: true,
@@ -430,10 +446,11 @@ export function createGatewayApp(
             elapsedMs: Date.now() - startTime
           },
           output: serializeCommandResult(result)
-        });
+        }));
       } catch (error: unknown) {
+        clearInterval(keepaliveTimer);
         if (isGatewayCommandError(error) && error.result.exitCode === 124) {
-          res.json({
+          res.end(JSON.stringify({
             ok: true,
             waitResult: {
               completed: false,
@@ -441,13 +458,24 @@ export function createGatewayApp(
               elapsedMs: Date.now() - startTime
             },
             output: serializeCommandResult(error.result)
-          });
+          }));
           return;
         }
 
         throw error;
       }
     } catch (error: unknown) {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+      }
+
+      // If headers were already sent (keepalive started), write error as JSON body
+      if (res.headersSent) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.end(JSON.stringify({ ok: false, error: message }));
+        return;
+      }
+
       if (
         error instanceof Error &&
         (/required and must be a non-empty string/.test(error.message) || /must be a positive integer/.test(error.message))

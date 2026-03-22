@@ -106,6 +106,22 @@ describe('GatewaySessionManager', () => {
     expect(requestUrl).toBe('http://gateway.test:6767/wait?id=fizz-top&timeout=12&interval=3');
   });
 
+  it('handles keepalive newlines prefixed to JSON response body', async () => {
+    const payload = { waitResult: { completed: true, timedOut: false, elapsedMs: 4200 } };
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '\n\n\n' + JSON.stringify(payload)
+    } as Response));
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    const result = await manager.waitForSession('fizz-top', { timeoutSeconds: 600 });
+    expect(result).toEqual(payload.waitResult);
+  });
+
   it('throws gateway error payloads for non-2xx responses', async () => {
     const fetchSpy = vi.fn(async () => jsonResponse(404, { error: 'Session not found: fizz-top' }));
     const manager = new GatewaySessionManager({

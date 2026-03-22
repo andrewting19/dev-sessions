@@ -4,7 +4,8 @@ import {
   createGatewayApp,
   GatewayCommandError,
   GatewayCommandExecutor,
-  GatewayCommandResult
+  GatewayCommandResult,
+  WAIT_KEEPALIVE_INTERVAL_MS
 } from '../../src/gateway/server';
 
 function createCommandResult(args: string[], stdout: string): GatewayCommandResult {
@@ -298,6 +299,29 @@ describe('gateway server', () => {
     expect(body.waitResult.timedOut).toBe(true);
     expect(body.output.exitCode).toBe(124);
   });
+
+  it('sends keepalive newlines during long wait requests', async () => {
+    // Simulate a wait that takes longer than the keepalive interval
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      await new Promise((resolve) => setTimeout(resolve, WAIT_KEEPALIVE_INTERVAL_MS + 50));
+      return createCommandResult(args, 'completed\n');
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/wait?id=fizz-top&timeout=60`);
+    expect(response.status).toBe(200);
+
+    // The raw body should contain keepalive newlines before the JSON payload
+    const rawBody = await response.text();
+    const trimmed = rawBody.trim();
+    expect(rawBody.length).toBeGreaterThan(trimmed.length);
+
+    const body = JSON.parse(trimmed);
+    expect(body.ok).toBe(true);
+    expect(body.waitResult.completed).toBe(true);
+    expect(body.waitResult.timedOut).toBe(false);
+  }, { timeout: WAIT_KEEPALIVE_INTERVAL_MS + 5000 });
 
   it('parses last-message output into blocks', async () => {
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
