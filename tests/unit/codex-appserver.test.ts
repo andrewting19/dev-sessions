@@ -468,6 +468,39 @@ describe('CodexAppServerBackend', () => {
     expect(clients[0].waitCalls).toEqual([{ timeoutMs: 5_000, expectedThreadId: 'thr_active' }]);
   });
 
+  it('waitForThread recognizes 0.105.0+ tagged active status format', async () => {
+    const { backend, clients } = createHarness([
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 20,
+          status: 'completed'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_tagged_active',
+                status: { type: 'active', activeFlags: [] }
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('lux-mid', 'thr_tagged_active', 5_000);
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed'
+    });
+    expect(clients[0].waitCalls).toEqual([{ timeoutMs: 5_000, expectedThreadId: 'thr_tagged_active' }]);
+  });
+
   it('waitForThread loops across multiple completed turns until the thread is no longer active', async () => {
     const { backend, clients } = createHarness([
       {
@@ -764,6 +797,80 @@ describe('CodexAppServerBackend', () => {
 
     expect(daemon.getServerCalls).toBe(1);
     expect(clients).toHaveLength(0);
+  });
+
+  it('getThreadRuntimeStatus parses 0.105.0+ tagged status format', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_tagged',
+                status: { type: 'active', activeFlags: [] }
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const status = await backend.getThreadRuntimeStatus('thr_tagged');
+    expect(status).toBe('active');
+  });
+
+  it('getThreadRuntimeStatus parses tagged idle status', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_tagged_idle',
+                status: { type: 'idle' }
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const status = await backend.getThreadRuntimeStatus('thr_tagged_idle');
+    expect(status).toBe('idle');
+  });
+
+  it('getThreadRuntimeStatus returns notLoaded when thread/resume reports no rollout found', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            throw new Error('thread/resume failed: no rollout found for thread id thr_missing');
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const status = await backend.getThreadRuntimeStatus('thr_missing');
+    expect(status).toBe('notLoaded');
+  });
+
+  it('getThreadRuntimeStatus returns unknown for non-resume connection errors', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            throw new Error('some unexpected error');
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const status = await backend.getThreadRuntimeStatus('thr_broken');
+    expect(status).toBe('unknown');
   });
 
   it('ignores thread/archive not-found errors during kill', async () => {

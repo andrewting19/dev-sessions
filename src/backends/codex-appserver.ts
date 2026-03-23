@@ -787,14 +787,25 @@ function extractThreadId(result: unknown): string {
 function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown' {
   const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
   if (!thread || !('status' in thread)) {
-    return 'idle';
+    return 'idle';  // Codex 0.104.0 omits status field entirely for idle threads
   }
   const status = thread.status;
+  // String status (simple enum)
   if (status === 'idle' || status === 'notLoaded' || status === 'systemError') {
     return status;
   }
-  if (status !== null && typeof status === 'object' && 'active' in status) {
-    return 'active';
+  if (status !== null && typeof status === 'object') {
+    // Pre-0.105.0 format: { "active": { "activeFlags": [...] } }
+    if ('active' in status) {
+      return 'active';
+    }
+    // 0.105.0+ tagged format: { "type": "active", "activeFlags": [...] }
+    const tagged = status as Record<string, unknown>;
+    if (typeof tagged.type === 'string') {
+      const t = tagged.type;
+      if (t === 'active') return 'active';
+      if (t === 'idle' || t === 'notLoaded' || t === 'systemError') return t;
+    }
   }
   return 'unknown';
 }
@@ -1073,12 +1084,19 @@ export class CodexAppServerBackend {
       return 'unknown';
     }
 
-    const { result } = await this.withConnectedClient(async (client) => {
-      const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
-      return extractThreadRuntimeStatus(resumeResult);
-    });
+    try {
+      const { result } = await this.withConnectedClient(async (client) => {
+        const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
+        return extractThreadRuntimeStatus(resumeResult);
+      });
 
-    return result;
+      return result;
+    } catch (error: unknown) {
+      if (this.isResumeNotFoundError(error)) {
+        return 'notLoaded';
+      }
+      return 'unknown';
+    }
   }
 
   async waitForThread(

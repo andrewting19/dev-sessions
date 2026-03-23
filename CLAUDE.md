@@ -58,7 +58,7 @@ tests/
 
 ## Non-Obvious Gotchas
 
-- **Codex `ThreadStatus` JSON shape**: As of codex-cli 0.104.0 (the current stable release), `thread.status` is **absent** when idle — the field doesn't exist in the response at all. `"active"` is `{ "active": { "activeFlags": [...] } }`. Do NOT look for a `.type` field. NOTE: the Rust source in `/tmp/codex` (pinned to the last commit before 0.104.0 was published — `1946a4c4`) shows `thread.status` was added *after* 0.104.0 shipped. When 0.105.0 stable releases, the shape will change to tagged objects like `{"type":"idle"}` and the parser will need updating. Always verify protocol behavior against the pinned `/tmp/codex` source AND the live binary — they may differ across releases.
+- **Codex `ThreadStatus` JSON shape**: The parser in `extractThreadRuntimeStatus` handles three formats: (1) **0.104.0**: `thread.status` is **absent** when idle; `"active"` is `{ "active": { "activeFlags": [...] } }`. (2) **0.105.0+**: tagged objects like `{ "type": "active", "activeFlags": [] }` or `{ "type": "idle" }`. (3) String values like `"idle"`, `"notLoaded"`, `"systemError"`. All three are supported simultaneously. Additionally, `getThreadRuntimeStatus` gracefully handles "no rollout found" errors from `thread/resume` by returning `'notLoaded'` instead of throwing.
 
 - **Inspecting Codex protocol source**: `/tmp/codex` is a clone of the openai/codex repo pinned to commit `1946a4c4` (last commit before 0.104.0 was published Feb 18 2026 07:13 UTC). To check what a future version adds, use `git -C /tmp/codex log --oneline --format="%h %aI %s"` to find commits by date. When the installed binary is updated, re-pin `/tmp/codex` to the matching commit.
 
