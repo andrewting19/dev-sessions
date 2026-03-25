@@ -816,8 +816,8 @@ describe('CodexAppServerBackend', () => {
       }
     ]);
 
-    const status = await backend.getThreadRuntimeStatus('thr_tagged');
-    expect(status).toBe('active');
+    const result = await backend.getThreadRuntimeStatus('thr_tagged');
+    expect(result).toEqual({ status: 'active', errorDetail: undefined });
   });
 
   it('getThreadRuntimeStatus parses tagged idle status', async () => {
@@ -837,8 +837,8 @@ describe('CodexAppServerBackend', () => {
       }
     ]);
 
-    const status = await backend.getThreadRuntimeStatus('thr_tagged_idle');
-    expect(status).toBe('idle');
+    const result = await backend.getThreadRuntimeStatus('thr_tagged_idle');
+    expect(result).toEqual({ status: 'idle', errorDetail: undefined });
   });
 
   it('getThreadRuntimeStatus returns notLoaded when thread/resume reports no rollout found', async () => {
@@ -853,8 +853,8 @@ describe('CodexAppServerBackend', () => {
       }
     ]);
 
-    const status = await backend.getThreadRuntimeStatus('thr_missing');
-    expect(status).toBe('notLoaded');
+    const result = await backend.getThreadRuntimeStatus('thr_missing');
+    expect(result).toEqual({ status: 'notLoaded' });
   });
 
   it('getThreadRuntimeStatus returns unknown for non-resume connection errors', async () => {
@@ -869,8 +869,42 @@ describe('CodexAppServerBackend', () => {
       }
     ]);
 
-    const status = await backend.getThreadRuntimeStatus('thr_broken');
-    expect(status).toBe('unknown');
+    const result = await backend.getThreadRuntimeStatus('thr_broken');
+    expect(result).toEqual({ status: 'unknown' });
+  });
+
+  it('getThreadRuntimeStatus extracts errorDetail from failed turns in systemError state', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                id: 'thr_sys_err',
+                status: { type: 'systemError' },
+                turns: [
+                  {
+                    id: 'turn_1',
+                    status: 'failed',
+                    error: {
+                      message: 'Your access token could not be refreshed because your refresh token was already used.',
+                      codexErrorInfo: 'unauthorized'
+                    }
+                  }
+                ]
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.getThreadRuntimeStatus('thr_sys_err');
+    expect(result).toEqual({
+      status: 'systemError',
+      errorDetail: 'Your access token could not be refreshed because your refresh token was already used.'
+    });
   });
 
   it('ignores thread/archive not-found errors during kill', async () => {

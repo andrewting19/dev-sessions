@@ -69,7 +69,7 @@ export class CodexBackend implements Backend {
   }
 
   async status(session: StoredSession): Promise<BackendStatusResult> {
-    const liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+    const { status: liveStatus, errorDetail } = await this.raw.getThreadRuntimeStatus(session.internalId);
     const hasPendingTurnId = typeof session.codexActiveTurnId === 'string' && session.codexActiveTurnId.length > 0;
 
     if (liveStatus === 'active') {
@@ -86,7 +86,10 @@ export class CodexBackend implements Backend {
     }
 
     if (liveStatus === 'systemError') {
-      return { errorToThrow: new Error('Codex app-server is in a system error state'), status: 'idle' };
+      const msg = errorDetail
+        ? `Codex app-server is in a system error state: ${errorDetail}`
+        : 'Codex app-server is in a system error state';
+      return { errorToThrow: new Error(msg), status: 'idle' };
     }
 
     return { errorToThrow: new Error('Could not reach Codex app-server'), status: 'idle' };
@@ -97,14 +100,14 @@ export class CodexBackend implements Backend {
     const hasPendingTurnId = typeof session.codexActiveTurnId === 'string' && session.codexActiveTurnId.length > 0;
 
     if (!session.codexTurnInProgress && !hasPendingTurnId && session.lastTurnStatus === 'failed') {
-      let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
+      let liveResult: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
       try {
-        liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+        liveResult = await this.raw.getThreadRuntimeStatus(session.internalId);
       } catch {
-        liveStatus = 'unknown';
+        liveResult = { status: 'unknown' };
       }
 
-      if (liveStatus === 'idle' || liveStatus === 'notLoaded') {
+      if (liveResult.status === 'idle' || liveResult.status === 'notLoaded') {
         return {
           completed: true,
           timedOut: false,
@@ -113,9 +116,10 @@ export class CodexBackend implements Backend {
         };
       }
 
-      if (liveStatus !== 'active') {
-        const message = session.lastTurnError
-          ? `Codex turn failed: ${session.lastTurnError}`
+      if (liveResult.status !== 'active') {
+        const detail = liveResult.errorDetail ?? session.lastTurnError;
+        const message = detail
+          ? `Codex turn failed: ${detail}`
           : 'Codex turn failed';
         return {
           completed: false,
@@ -129,14 +133,14 @@ export class CodexBackend implements Backend {
     }
 
     if (!session.codexTurnInProgress && !hasPendingTurnId) {
-      let liveStatus: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
+      let liveResult: Awaited<ReturnType<typeof this.raw.getThreadRuntimeStatus>>;
       try {
-        liveStatus = await this.raw.getThreadRuntimeStatus(session.internalId);
+        liveResult = await this.raw.getThreadRuntimeStatus(session.internalId);
       } catch {
-        liveStatus = 'unknown';
+        liveResult = { status: 'unknown' };
       }
 
-      if (liveStatus !== 'active') {
+      if (liveResult.status !== 'active') {
         return {
           completed: true,
           timedOut: false,

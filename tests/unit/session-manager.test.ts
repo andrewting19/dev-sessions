@@ -154,11 +154,11 @@ class FakeCodexBackend extends CodexAppServerBackend {
     return this.statuses.get(championId) ?? 'idle';
   }
 
-  override async getThreadRuntimeStatus(threadId: string): Promise<'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown'> {
+  override async getThreadRuntimeStatus(threadId: string): Promise<{ status: 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown'; errorDetail?: string }> {
     const championId = this.threadIdToChampionId.get(threadId);
-    if (!championId) return 'notLoaded';
+    if (!championId) return { status: 'notLoaded' };
     const status = this.statuses.get(championId) ?? 'idle';
-    return status === 'working' ? 'active' : 'idle';
+    return { status: status === 'working' ? 'active' : 'idle' };
   }
 
   override async killSession(championId: string, pid?: number): Promise<void> {

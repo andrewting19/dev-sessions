@@ -810,6 +810,27 @@ function extractThreadRuntimeStatus(result: unknown): 'active' | 'idle' | 'notLo
   return 'unknown';
 }
 
+type ThreadRuntimeStatusString = 'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown';
+
+interface ThreadRuntimeResult {
+  status: ThreadRuntimeStatusString;
+  errorDetail?: string;
+}
+
+function extractThreadErrorDetail(result: unknown): string | undefined {
+  const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
+  if (!thread) return undefined;
+  const turns = (thread as Record<string, unknown>).turns;
+  if (!Array.isArray(turns)) return undefined;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i] as Record<string, unknown> | undefined;
+    if (turn?.status === 'failed' && turn.error && typeof (turn.error as Record<string, unknown>).message === 'string') {
+      return (turn.error as Record<string, unknown>).message as string;
+    }
+  }
+  return undefined;
+}
+
 function extractThreadReadAssistantMessages(result: unknown): string[] {
   if (!result || typeof result !== 'object') {
     throw new Error('thread/read returned an invalid response');
@@ -1078,24 +1099,28 @@ export class CodexAppServerBackend {
     };
   }
 
-  async getThreadRuntimeStatus(threadId: string): Promise<'active' | 'idle' | 'notLoaded' | 'systemError' | 'unknown'> {
+  async getThreadRuntimeStatus(threadId: string): Promise<ThreadRuntimeResult> {
     const normalizedThreadId = threadId.trim();
     if (normalizedThreadId.length === 0) {
-      return 'unknown';
+      return { status: 'unknown' };
     }
 
     try {
       const { result } = await this.withConnectedClient(async (client) => {
         const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
-        return extractThreadRuntimeStatus(resumeResult);
+        const status = extractThreadRuntimeStatus(resumeResult);
+        const errorDetail = (status === 'systemError' || status === 'unknown')
+          ? extractThreadErrorDetail(resumeResult)
+          : undefined;
+        return { status, errorDetail };
       });
 
       return result;
     } catch (error: unknown) {
       if (this.isResumeNotFoundError(error)) {
-        return 'notLoaded';
+        return { status: 'notLoaded' };
       }
-      return 'unknown';
+      return { status: 'unknown' };
     }
   }
 
