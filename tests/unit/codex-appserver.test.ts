@@ -620,6 +620,22 @@ describe('CodexAppServerBackend', () => {
           if (method === 'thread/resume') {
             return { thread: { id: 'thr_timed', status: 'idle' } };
           }
+          if (method === 'thread/read') {
+            return {
+              thread: {
+                turns: [
+                  {
+                    id: 'turn_timed',
+                    status: 'completed',
+                    items: [
+                      { type: 'userMessage', id: 'item-user', content: [] },
+                      { type: 'agentMessage', id: 'item-agent', text: 'timed command done.' }
+                    ]
+                  }
+                ]
+              }
+            };
+          }
           throw new Error(`Unexpected method: ${method}`);
         }
       }
@@ -633,10 +649,149 @@ describe('CodexAppServerBackend', () => {
       status: 'completed',
       assistantText: 'timed command done.'
     });
-    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
-    expect(clients[0].waitCalls).toEqual([
-      { timeoutMs: 40_000, expectedThreadId: 'thr_timed', expectedTurnId: 'turn_timed' }
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'thread/read']);
+    expect(clients[0].waitCalls).toEqual([]);
+  });
+
+  it('reconciles exact-turn completion against thread/read before returning', async () => {
+    const { backend, clients } = createHarness([
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 250,
+          status: 'completed'
+        },
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_exact', status: { active: { activeFlags: [] } } } };
+          }
+          if (method === 'thread/read') {
+            return {
+              thread: {
+                turns: [
+                  {
+                    id: 'turn_exact',
+                    status: 'inProgress',
+                    items: [
+                      { type: 'userMessage', id: 'item-user', content: [] }
+                    ]
+                  }
+                ]
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      },
+      {
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 600,
+          status: 'completed',
+          assistantText: 'DONE'
+        },
+        onRequest: (method, _params, requestIndex) => {
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_exact', status: { active: { activeFlags: [] } } } };
+          }
+          if (method === 'thread/read') {
+            if (requestIndex === 1) {
+              return {
+                thread: {
+                  turns: [
+                    {
+                      id: 'turn_exact',
+                      status: 'inProgress',
+                      items: [
+                        { type: 'userMessage', id: 'item-user', content: [] }
+                      ]
+                    }
+                  ]
+                }
+              };
+            }
+
+            return {
+              thread: {
+                turns: [
+                  {
+                    id: 'turn_exact',
+                    status: 'completed',
+                    items: [
+                      { type: 'userMessage', id: 'item-user', content: [] },
+                      { type: 'agentMessage', id: 'item-agent', text: 'DONE' }
+                    ]
+                  }
+                ]
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
     ]);
+
+    const result = await backend.waitForThread('nautilus-sup', 'thr_exact', 5_000, 'turn_exact');
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed',
+      assistantText: 'DONE'
+    });
+    expect(clients).toHaveLength(2);
+    expect(clients.map((client) => client.requests.map((entry) => entry.method))).toEqual([
+      ['thread/resume', 'thread/read', 'thread/read'],
+      ['thread/resume', 'thread/read', 'thread/read']
+    ]);
+    expect(clients[0].waitCalls).toEqual([
+      { timeoutMs: 5_000, expectedThreadId: 'thr_exact', expectedTurnId: 'turn_exact' }
+    ]);
+    expect(clients[1].waitCalls).toEqual([
+      { timeoutMs: expect.any(Number), expectedThreadId: 'thr_exact', expectedTurnId: 'turn_exact' }
+    ]);
+  });
+
+  it('returns immediately when thread/read already shows the exact turn completed', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_done', status: 'idle' } };
+          }
+          if (method === 'thread/read') {
+            return {
+              thread: {
+                turns: [
+                  {
+                    id: 'turn_done',
+                    status: 'completed',
+                    items: [
+                      { type: 'userMessage', id: 'item-user', content: [] },
+                      { type: 'agentMessage', id: 'item-agent', text: 'DONE' }
+                    ]
+                  }
+                ]
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('thresh-sup', 'thr_done', 5_000, 'turn_done');
+
+    expect(result).toMatchObject({
+      completed: true,
+      timedOut: false,
+      status: 'completed',
+      assistantText: 'DONE'
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'thread/read']);
+    expect(clients[0].waitCalls).toEqual([]);
   });
 
   it('treats unknown runtime status as completed (idle thread)', async () => {

@@ -817,6 +817,13 @@ interface ThreadRuntimeResult {
   errorDetail?: string;
 }
 
+interface ThreadReadTurnSnapshot {
+  turnId: string;
+  status?: 'inProgress' | TurnCompletionStatus;
+  errorMessage?: string;
+  assistantText?: string;
+}
+
 function extractThreadErrorDetail(result: unknown): string | undefined {
   const thread = (result as { thread?: Record<string, unknown> } | undefined)?.thread;
   if (!thread) return undefined;
@@ -977,6 +984,52 @@ function extractTurnError(turn: unknown): string | undefined {
   const message = (error as { message?: unknown }).message;
   if (typeof message === 'string' && message.length > 0) {
     return message;
+  }
+
+  return undefined;
+}
+
+function extractThreadReadTurnSnapshot(
+  result: unknown,
+  expectedTurnId: string
+): ThreadReadTurnSnapshot | undefined {
+  if (!result || typeof result !== 'object') {
+    throw new Error('thread/read returned an invalid response');
+  }
+
+  const thread = (result as Record<string, unknown>).thread;
+  if (!thread || typeof thread !== 'object') {
+    throw new Error('thread/read response is missing result.thread');
+  }
+
+  const turns = (thread as Record<string, unknown>).turns;
+  if (!Array.isArray(turns)) {
+    throw new Error('thread/read response is missing result.thread.turns');
+  }
+
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (!turn || typeof turn !== 'object') continue;
+
+    const turnId = extractTurnId(turn);
+    if (turnId !== expectedTurnId) continue;
+
+    const rawStatus = (turn as { status?: unknown }).status;
+    const status = rawStatus === 'inProgress' ? rawStatus : extractTurnStatus(turn);
+    const items = Array.isArray((turn as { items?: unknown }).items)
+      ? (((turn as { items?: unknown[] }).items) ?? [])
+      : [];
+    const assistantTexts = items
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .filter((item) => item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0)
+      .map((item) => item.text as string);
+
+    return {
+      turnId,
+      status,
+      errorMessage: extractTurnError(turn),
+      assistantText: assistantTexts.length > 0 ? assistantTexts.join('\n\n') : undefined
+    };
   }
 
   return undefined;
@@ -1145,27 +1198,123 @@ export class CodexAppServerBackend {
     let result: CodexTurnWaitResult | undefined;
 
     if (normalizedExpectedTurnId.length > 0) {
-      // Codex 0.104.0 can report thread/resume=idle and thread/read turn.status=completed
-      // while the initiated turn is still running tools. When we know the exact turn ID
-      // from turn/start, block on that turn's completion notification instead of trusting
-      // thread runtime status.
-      const waitCycle = await this.withConnectedClient(async (client) => {
-        // Resume first so this connection is subscribed to notifications for the thread.
-        await client.request('thread/resume', { threadId: normalizedThreadId });
-        return client.waitForTurnCompletion(safeTimeoutMs, normalizedThreadId, normalizedExpectedTurnId);
-      });
+      // A reconnect can see a stale/provisional completion signal before thread/read
+      // reflects the exact turn we started. Reconcile the exact turn ID against
+      // thread/read on each cycle so wait() only returns once that turn is truly terminal.
+      while (!result) {
+        const elapsedMs = Date.now() - overallStart;
+        const remainingMs = safeTimeoutMs - elapsedMs;
+        if (remainingMs <= 0) {
+          result = {
+            completed: false,
+            timedOut: true,
+            elapsedMs: Math.max(1, elapsedMs),
+            status: 'interrupted',
+            errorMessage: 'Timed out waiting for Codex turn completion',
+            assistantText: lastAssistantText
+          };
+          break;
+        }
 
-      if (waitCycle.result.assistantText) {
-        lastAssistantText = waitCycle.result.assistantText;
+        const waitCycle = await this.withConnectedClient(async (client) => {
+          await client.request('thread/resume', { threadId: normalizedThreadId });
+
+          const readBeforeWait = await client.request('thread/read', {
+            threadId: normalizedThreadId,
+            includeTurns: true
+          });
+          const snapshotBeforeWait = extractThreadReadTurnSnapshot(readBeforeWait, normalizedExpectedTurnId);
+
+          if (
+            snapshotBeforeWait?.status === 'completed' ||
+            snapshotBeforeWait?.status === 'failed' ||
+            snapshotBeforeWait?.status === 'interrupted'
+          ) {
+            return {
+              kind: 'snapshot' as const,
+              snapshot: snapshotBeforeWait
+            };
+          }
+
+          const waitResult = await client.waitForTurnCompletion(
+            remainingMs,
+            normalizedThreadId,
+            normalizedExpectedTurnId
+          );
+
+          const readAfterWait = await client.request('thread/read', {
+            threadId: normalizedThreadId,
+            includeTurns: true
+          });
+          const snapshotAfterWait = extractThreadReadTurnSnapshot(readAfterWait, normalizedExpectedTurnId);
+
+          return {
+            kind: 'wait' as const,
+            waitResult,
+            snapshotAfterWait
+          };
+        });
+
+        if (waitCycle.result.kind === 'snapshot') {
+          if (waitCycle.result.snapshot.assistantText) {
+            lastAssistantText = waitCycle.result.snapshot.assistantText;
+          }
+          const status = waitCycle.result.snapshot.status;
+          if (!status || status === 'inProgress') {
+            continue;
+          }
+          result = {
+            completed: status !== 'interrupted',
+            timedOut: status === 'interrupted',
+            elapsedMs: Math.max(0, Date.now() - overallStart),
+            status,
+            errorMessage: waitCycle.result.snapshot.errorMessage,
+            assistantText: waitCycle.result.snapshot.assistantText ?? lastAssistantText
+          };
+          break;
+        }
+
+        if (waitCycle.result.waitResult.assistantText) {
+          lastAssistantText = waitCycle.result.waitResult.assistantText;
+        }
+        if (waitCycle.result.snapshotAfterWait?.assistantText) {
+          lastAssistantText = waitCycle.result.snapshotAfterWait.assistantText;
+        }
+
+        if (
+          waitCycle.result.snapshotAfterWait?.status === 'completed' ||
+          waitCycle.result.snapshotAfterWait?.status === 'failed' ||
+          waitCycle.result.snapshotAfterWait?.status === 'interrupted'
+        ) {
+          const status = waitCycle.result.snapshotAfterWait.status;
+          result = {
+            completed: status !== 'interrupted',
+            timedOut: status === 'interrupted',
+            elapsedMs: Math.max(waitCycle.result.waitResult.elapsedMs, Date.now() - overallStart),
+            status,
+            errorMessage:
+              waitCycle.result.snapshotAfterWait.errorMessage ?? waitCycle.result.waitResult.errorMessage,
+            assistantText:
+              waitCycle.result.snapshotAfterWait.assistantText ??
+              waitCycle.result.waitResult.assistantText ??
+              lastAssistantText
+          };
+          break;
+        }
+
+        if (
+          waitCycle.result.waitResult.timedOut ||
+          waitCycle.result.waitResult.status === 'failed' ||
+          waitCycle.result.waitResult.status === 'interrupted'
+        ) {
+          result = {
+            ...waitCycle.result.waitResult,
+            elapsedMs: Math.max(waitCycle.result.waitResult.elapsedMs, Date.now() - overallStart),
+            assistantText: waitCycle.result.waitResult.assistantText ?? lastAssistantText
+          };
+          break;
+        }
       }
-
-      result = {
-        ...waitCycle.result,
-        elapsedMs: waitCycle.result.timedOut
-          ? Math.max(waitCycle.result.elapsedMs, Date.now() - overallStart)
-          : waitCycle.result.elapsedMs,
-        assistantText: waitCycle.result.assistantText ?? lastAssistantText
-      };
     }
 
     while (!result) {
