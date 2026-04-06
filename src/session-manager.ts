@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { stat } from 'node:fs/promises';
 import { generateChampionId } from './champion-ids';
 import { Backend } from './backends/backend';
 import { ClaudeBackend } from './backends/claude-backend';
@@ -46,6 +47,7 @@ export class SessionManager {
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
     const workspacePath = path.resolve(options.path ?? process.cwd());
+    await this.assertWorkspacePathExists(workspacePath);
     const cli = options.cli ?? 'claude';
     const backend = this.getBackend(cli);
     const championId = await this.findAvailableChampionId();
@@ -250,6 +252,20 @@ export class SessionManager {
     }
 
     throw new Error('Unable to allocate a unique champion ID');
+  }
+
+  private async assertWorkspacePathExists(workspacePath: string): Promise<void> {
+    try {
+      const workspaceStat = await stat(workspacePath);
+      if (!workspaceStat.isDirectory()) {
+        throw new Error(`Workspace path is not a directory: ${workspacePath}`);
+      }
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Workspace path does not exist: ${workspacePath}`);
+      }
+      throw error;
+    }
   }
 }
 

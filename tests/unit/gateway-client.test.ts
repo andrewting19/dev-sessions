@@ -194,8 +194,10 @@ describe('GatewaySessionManager', () => {
     // Without DEV_SESSIONS_SANDBOX, no translation
     expect(translateContainerPath('/workspace', { ...env, DEV_SESSIONS_SANDBOX: '0' })).toBe('/workspace');
 
-    // Without HOST_PATH, no translation
-    expect(translateContainerPath('/workspace', { DEV_SESSIONS_SANDBOX: '1' } as NodeJS.ProcessEnv)).toBe('/workspace');
+    // Without HOST_PATH, workspace paths fail fast instead of creating broken sessions
+    expect(() => translateContainerPath('/workspace', { DEV_SESSIONS_SANDBOX: '1' } as NodeJS.ProcessEnv)).toThrow(
+      'HOST_PATH is required when running in sandbox mode'
+    );
   });
 
   it('translates paths with custom CONTAINER_WORKSPACE', () => {

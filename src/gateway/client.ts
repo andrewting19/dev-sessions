@@ -66,13 +66,25 @@ export function translateContainerPath(
   containerPath: string,
   env: NodeJS.ProcessEnv = process.env
 ): string {
-  const hostPath = env.HOST_PATH;
-  if (env.DEV_SESSIONS_SANDBOX !== '1' || typeof hostPath !== 'string' || hostPath.trim().length === 0) {
+  if (env.DEV_SESSIONS_SANDBOX !== '1') {
     return containerPath;
   }
 
   const containerWorkspace = (env.CONTAINER_WORKSPACE ?? DEFAULT_CONTAINER_WORKSPACE).replace(/\/+$/, '');
   const resolved = path.resolve(containerPath);
+  const targetsWorkspace =
+    resolved === containerWorkspace || resolved.startsWith(containerWorkspace + '/');
+
+  if (!targetsWorkspace) {
+    return containerPath;
+  }
+
+  const hostPath = env.HOST_PATH;
+  if (typeof hostPath !== 'string' || hostPath.trim().length === 0) {
+    throw new Error(
+      `HOST_PATH is required when running in sandbox mode with ${containerWorkspace} paths (received ${resolved})`
+    );
+  }
 
   if (resolved === containerWorkspace) {
     return hostPath;

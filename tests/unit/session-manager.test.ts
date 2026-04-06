@@ -209,6 +209,18 @@ describe('SessionManager', () => {
     backend = new FakeClaudeBackend();
     codexBackend = new FakeCodexBackend();
     manager = new SessionManager(store, new ClaudeBackend(backend), new CodexBackend(codexBackend));
+
+    await mkdir('/tmp/project', { recursive: true });
+    await mkdir('/tmp/project-stale', { recursive: true });
+    await mkdir('/tmp/project-timeout', { recursive: true });
+    await mkdir('/tmp/codex-project', { recursive: true });
+    await mkdir('/tmp/codex-history-fallback', { recursive: true });
+    await mkdir('/tmp/codex-stale-last-message', { recursive: true });
+    await mkdir('/tmp/codex-stale-wait', { recursive: true });
+    await mkdir('/tmp/codex-live-recheck', { recursive: true });
+    await mkdir('/tmp/codex-status-latch', { recursive: true });
+    await mkdir('/tmp/claude-mixed', { recursive: true });
+    await mkdir('/tmp/codex-mixed', { recursive: true });
   });
 
   afterEach(async () => {
@@ -238,6 +250,18 @@ describe('SessionManager', () => {
       mode: 'native',
       sessionUuid: session.internalId
     });
+  });
+
+  it('fails fast when the workspace path does not exist', async () => {
+    await expect(
+      manager.createSession({
+        path: path.join(tmpDir, 'missing-workspace'),
+        mode: 'native'
+      })
+    ).rejects.toThrow(`Workspace path does not exist: ${path.join(tmpDir, 'missing-workspace')}`);
+
+    expect(backend.createCalls).toHaveLength(0);
+    expect(codexBackend.createCalls).toHaveLength(0);
   });
 
   it('waits for a new assistant response instead of stale transcript state', async () => {

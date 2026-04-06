@@ -22,6 +22,7 @@
 - [x] Thin HTTP relay gateway (`dev-sessions gateway --port <port>`)
 - [x] CLI auto-detection: `DEV_SESSIONS_SANDBOX=1` → route through gateway
 - [x] `HOST_PATH` mapping for transcript resolution
+- [x] Fail fast when sandbox `/workspace` paths cannot be translated because `HOST_PATH` is missing
 - [x] Gateway as subcommand (no separate install needed)
 - [x] Gateway binary resolution — resolves path from `process.argv[1]`
 - [x] Gateway request logging — requests logged for easier Docker debugging
@@ -155,6 +156,7 @@ File-based locking added to `SessionStore` via atomic `mkdir` lock primitive. Al
 - [x] `logs` command — full transcript dump with role labels (Claude: JSONL parse; Codex: thread/read)
 - [x] `inspect` command — dump raw stored session record as JSON
 - [ ] Better error messages throughout (session not found, tmux not installed, codex not installed)
+- [x] Reject nonexistent workspace paths up front instead of creating broken sessions
 - [ ] Version strings — source from `package.json` in one place (currently duplicated in cli.ts and codex clientInfo)
 
 ### Future
