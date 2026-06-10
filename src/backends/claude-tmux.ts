@@ -91,7 +91,9 @@ export class ClaudeTmuxBackend {
     } catch (error: unknown) {
       if (
         error instanceof Error &&
-        /can't find session|session not found/i.test(error.message)
+        // "no server running" is definitive: without a tmux server there are no
+        // sessions, so the target session cannot be alive.
+        /can't find session|session not found|no server running/i.test(error.message)
       ) {
         return 'dead';
       }

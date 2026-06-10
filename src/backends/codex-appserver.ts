@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
-import { AgentTurnStatus } from '../types';
+import { AgentTurnStatus, GoalUpdate, ThreadGoal, ThreadGoalStatus } from '../types';
 
 type TurnCompletionStatus = 'completed' | 'failed' | 'interrupted';
 
@@ -56,7 +56,7 @@ export interface CodexAppServerInfo {
 
 export interface CodexSessionCreateResult {
   threadId: string;
-  model: string;
+  model?: string;
   appServerPid: number;
   appServerPort: number;
 }
@@ -108,7 +108,6 @@ export interface CodexAppServerBackendDependencies {
 
 type SpawnCodexDaemonProcess = (args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
 
-const DEFAULT_MODEL = 'gpt-5.3-codex';
 const DEFAULT_TIMEOUT_MS = 300_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -373,6 +372,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
   private turnError?: string;
   private turnThreadId?: string;
   private turnId?: string;
+  private errorNotification?: { threadId?: string; turnId?: string; message: string };
   private closed = false;
   private closing = false;
 
@@ -669,6 +669,26 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       return;
     }
 
+    // Terminal API errors (e.g. invalid model) arrive as a dedicated `error`
+    // notification; the subsequent turn/completed may carry no error detail in
+    // the persisted turn, so remember the message as a fallback.
+    if (notification.method === 'error') {
+      const params = notification.params as
+        | { error?: { message?: unknown }; willRetry?: unknown; threadId?: unknown; turnId?: unknown }
+        | undefined;
+      if (params && params.willRetry !== true) {
+        const message = params.error && typeof params.error === 'object' ? params.error.message : undefined;
+        if (typeof message === 'string' && message.length > 0) {
+          this.errorNotification = {
+            threadId: typeof params.threadId === 'string' ? params.threadId : undefined,
+            turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+            message
+          };
+        }
+      }
+      return;
+    }
+
     if (notification.method !== 'turn/completed') {
       return;
     }
@@ -686,7 +706,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
     }
 
     this.turnStatus = status;
-    this.turnError = extractTurnError(turn);
+    this.turnError = extractTurnError(turn) ?? this.matchingErrorNotification(notificationThreadId, notificationTurnId);
     this.turnThreadId = notificationThreadId;
     this.turnId = notificationTurnId;
     this.resolveWaiters({
@@ -697,6 +717,17 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       errorMessage: this.turnError,
       assistantText: this.currentText.length > 0 ? this.currentText : undefined
     }, notificationThreadId, notificationTurnId);
+  }
+
+  private matchingErrorNotification(threadId: string | undefined, turnId: string | undefined): string | undefined {
+    const candidate = this.errorNotification;
+    if (!candidate) {
+      return undefined;
+    }
+
+    const threadMatches = !candidate.threadId || !threadId || candidate.threadId === threadId;
+    const turnMatches = !candidate.turnId || !turnId || candidate.turnId === turnId;
+    return threadMatches && turnMatches ? candidate.message : undefined;
   }
 
   private hasMatchingWaiterForTurn(threadId: string | undefined, turnId: string | undefined): boolean {
@@ -922,6 +953,52 @@ function extractThreadTurns(result: unknown): Array<{ role: 'human' | 'assistant
   return sessionTurns;
 }
 
+const THREAD_GOAL_STATUSES: ThreadGoalStatus[] = [
+  'active',
+  'paused',
+  'blocked',
+  'usageLimited',
+  'budgetLimited',
+  'complete'
+];
+
+function extractThreadGoal(value: unknown): ThreadGoal {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Codex goal response is missing the goal object');
+  }
+
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.threadId !== 'string' || typeof rec.objective !== 'string') {
+    throw new Error('Codex goal response has an unexpected shape (missing threadId/objective)');
+  }
+
+  const status = THREAD_GOAL_STATUSES.includes(rec.status as ThreadGoalStatus)
+    ? (rec.status as ThreadGoalStatus)
+    : undefined;
+  if (!status) {
+    throw new Error(`Codex goal response has an unknown status: ${String(rec.status)}`);
+  }
+
+  return {
+    threadId: rec.threadId,
+    objective: rec.objective,
+    status,
+    tokenBudget: typeof rec.tokenBudget === 'number' ? rec.tokenBudget : null,
+    tokensUsed: typeof rec.tokensUsed === 'number' ? rec.tokensUsed : 0,
+    timeUsedSeconds: typeof rec.timeUsedSeconds === 'number' ? rec.timeUsedSeconds : 0,
+    createdAt: typeof rec.createdAt === 'number' ? rec.createdAt : 0,
+    updatedAt: typeof rec.updatedAt === 'number' ? rec.updatedAt : 0
+  };
+}
+
+function extractGoalFromResponse(result: unknown): ThreadGoal | undefined {
+  const goal = (result as { goal?: unknown } | undefined)?.goal;
+  if (goal === null || goal === undefined) {
+    return undefined;
+  }
+  return extractThreadGoal(goal);
+}
+
 function extractDeltaText(params: unknown): string {
   if (!params || typeof params !== 'object') {
     return '';
@@ -989,6 +1066,29 @@ function extractTurnError(turn: unknown): string | undefined {
   return undefined;
 }
 
+// Some API failures (e.g. invalid model) are persisted as a 'completed' turn
+// with no agent message while the thread itself transitions to systemError.
+// A wait that reconnects after the fact would otherwise report silent success.
+function reconcileSilentTurnFailure(
+  snapshot: ThreadReadTurnSnapshot,
+  threadRuntimeStatus: ThreadRuntimeStatusString,
+  threadErrorDetail: string | undefined
+): ThreadReadTurnSnapshot {
+  if (
+    snapshot.status === 'completed' &&
+    !snapshot.assistantText &&
+    !snapshot.errorMessage &&
+    threadRuntimeStatus === 'systemError'
+  ) {
+    return {
+      ...snapshot,
+      status: 'failed',
+      errorMessage: threadErrorDetail ?? 'Codex thread is in systemError state'
+    };
+  }
+  return snapshot;
+}
+
 function extractThreadReadTurnSnapshot(
   result: unknown,
   expectedTurnId: string
@@ -1048,11 +1148,13 @@ export class CodexAppServerBackend {
   async createSession(
     championId: string,
     workspacePath: string,
-    model: string = DEFAULT_MODEL
+    model?: string
   ): Promise<CodexSessionCreateResult> {
     const { server, result } = await this.withConnectedClient(async (client) => {
       const threadResult = await client.request('thread/start', {
-        model,
+        // Omit model unless explicitly requested — codex resolves its own
+        // configured default, which tracks model deprecations across releases.
+        ...(model ? { model } : {}),
         cwd: workspacePath,
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
@@ -1084,7 +1186,7 @@ export class CodexAppServerBackend {
       throw new Error('Codex workspace path is required to send a message');
     }
 
-    const model = options.model ?? DEFAULT_MODEL;
+    const model = options.model;
     this.ensureSessionState(championId);
 
     const { server, result: activeThreadId } = await this.withConnectedClient(async (client) => {
@@ -1095,7 +1197,7 @@ export class CodexAppServerBackend {
           await client.request('thread/resume', {
             threadId: tid,
             cwd: options.workspacePath,
-            model,
+            ...(model ? { model } : {}),
             approvalPolicy: 'never',
             sandbox: 'danger-full-access',
             persistExtendedHistory: true
@@ -1111,7 +1213,7 @@ export class CodexAppServerBackend {
 
       if (tid.length === 0) {
         const threadResult = await client.request('thread/start', {
-          model,
+          ...(model ? { model } : {}),
           cwd: options.workspacePath,
           approvalPolicy: 'never',
           sandbox: 'danger-full-access',
@@ -1217,13 +1319,19 @@ export class CodexAppServerBackend {
         }
 
         const waitCycle = await this.withConnectedClient(async (client) => {
-          await client.request('thread/resume', { threadId: normalizedThreadId });
+          const resumeResult = await client.request('thread/resume', { threadId: normalizedThreadId });
+          const threadRuntimeStatus = extractThreadRuntimeStatus(resumeResult);
+          const threadErrorDetail =
+            threadRuntimeStatus === 'systemError' ? extractThreadErrorDetail(resumeResult) : undefined;
 
           const readBeforeWait = await client.request('thread/read', {
             threadId: normalizedThreadId,
             includeTurns: true
           });
-          const snapshotBeforeWait = extractThreadReadTurnSnapshot(readBeforeWait, normalizedExpectedTurnId);
+          const rawSnapshotBeforeWait = extractThreadReadTurnSnapshot(readBeforeWait, normalizedExpectedTurnId);
+          const snapshotBeforeWait = rawSnapshotBeforeWait
+            ? reconcileSilentTurnFailure(rawSnapshotBeforeWait, threadRuntimeStatus, threadErrorDetail)
+            : undefined;
 
           if (
             snapshotBeforeWait?.status === 'completed' ||
@@ -1495,6 +1603,62 @@ export class CodexAppServerBackend {
     }
 
     return 'idle';
+  }
+
+  async setThreadGoal(threadId: string, update: GoalUpdate): Promise<ThreadGoal> {
+    const normalizedThreadId = this.requireThreadId(threadId, 'set a goal');
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      // Resume first so the thread is loaded in the daemon — goal continuation
+      // turns are driven by the app-server and need a live thread.
+      await client.request('thread/resume', { threadId: normalizedThreadId });
+      const response = await client.request('thread/goal/set', {
+        threadId: normalizedThreadId,
+        ...(update.objective !== undefined ? { objective: update.objective } : {}),
+        ...(update.status !== undefined ? { status: update.status } : {}),
+        ...(update.tokenBudget !== undefined ? { tokenBudget: update.tokenBudget } : {})
+      });
+      const goal = extractGoalFromResponse(response);
+      if (!goal) {
+        throw new Error('thread/goal/set did not return a goal');
+      }
+      return goal;
+    });
+
+    return result;
+  }
+
+  async getThreadGoal(threadId: string): Promise<ThreadGoal | undefined> {
+    const normalizedThreadId = this.requireThreadId(threadId, 'read a goal');
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      await client.request('thread/resume', { threadId: normalizedThreadId });
+      const response = await client.request('thread/goal/get', { threadId: normalizedThreadId });
+      return extractGoalFromResponse(response);
+    });
+
+    return result;
+  }
+
+  async clearThreadGoal(threadId: string): Promise<boolean> {
+    const normalizedThreadId = this.requireThreadId(threadId, 'clear a goal');
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      await client.request('thread/resume', { threadId: normalizedThreadId });
+      const response = await client.request('thread/goal/clear', { threadId: normalizedThreadId });
+      const cleared = (response as { cleared?: unknown } | undefined)?.cleared;
+      return cleared === true;
+    });
+
+    return result;
+  }
+
+  private requireThreadId(threadId: string, action: string): string {
+    const normalized = threadId.trim();
+    if (normalized.length === 0) {
+      throw new Error(`Codex thread ID is required to ${action}`);
+    }
+    return normalized;
   }
 
   async killSession(championId: string, pid?: number, threadId?: string, port?: number): Promise<void> {

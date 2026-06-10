@@ -1,4 +1,4 @@
-import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from '../types';
+import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from '../types';
 
 export interface BackendCreateOptions {
   championId: string;
@@ -44,4 +44,9 @@ export interface Backend {
   getLogs(session: StoredSession): Promise<SessionTurn[]>;
   kill(session: StoredSession): Promise<void>;
   afterKill(remainingActiveSessions: StoredSession[]): Promise<void>;
+  // Goal support (codex only). Backends that don't implement these are reported
+  // as unsupported by the session manager.
+  setGoal?(session: StoredSession, update: GoalUpdate): Promise<ThreadGoal>;
+  getGoal?(session: StoredSession): Promise<ThreadGoal | undefined>;
+  clearGoal?(session: StoredSession): Promise<boolean>;
 }

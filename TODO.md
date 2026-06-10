@@ -79,6 +79,19 @@
 - [x] Real E2E verified: Codex send→wait→last-message (PONG test)
 - [x] Real E2E verified: Docker gateway relay
 
+### Phase 6: Codex 0.139.0 + Goals ✅
+- [x] Verified against codex-cli 0.139.0 (latest as of 2026-06-09) — live E2E: create/send/wait/last-message/status/logs/kill, including tool-executing turns
+- [x] **Model default removed** — `gpt-5.3-codex` was hardcoded and is now rejected by the API (400 on ChatGPT accounts), silently breaking every new session. `model` is omitted from `thread/start`/`thread/resume` unless `create --model` is passed; legacy stored `gpt-5.3-codex` is dropped on send
+- [x] `create --model <m>` flag
+- [x] **Goal support** (Codex `/goal`, stable since 0.133.0): `goal <id> [objective] [--budget N] [--pause|--resume|--clear] [--json]` via `thread/goal/set|get|clear`; setting an objective implies `status: active` (otherwise a completed goal stays complete and nothing runs)
+- [x] `wait <id> --goal` — blocks until the goal reaches a terminal state (complete/paused/blocked/usageLimited/budgetLimited); prints the status; exit 124 on timeout
+- [x] `ask <id> <msg>` — one-shot send + wait + print-reply round trip
+- [x] Gateway routes for goal (`GET/POST /goal`, `GET /wait?goal=1`) + gateway client methods
+- [x] **Failed turns surface real errors** — `error` notifications (e.g. invalid model 400s) are captured live and used when `turn/completed` lacks detail; reconnecting `wait` detects the silent-failure pattern (turn persisted `completed` with no output + thread `systemError`) and reports failure with the thread error detail
+- [x] tmux `sessionExists` treats "no server running" as `dead` (was `unknown`, which blocked pruning when the killed session was the last one on the server)
+- [x] Live goal E2E: set → autonomous turn → complete; pause/resume/clear; second objective reactivates
+- [x] `/tmp/codex` re-pinned to `rust-v0.139.0`
+
 ---
 
 ## Known Issues (open)

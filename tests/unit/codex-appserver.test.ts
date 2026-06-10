@@ -1078,4 +1078,288 @@ describe('CodexAppServerBackend', () => {
       backend.killSession('fizz-top', daemon.server.pid, 'thr_missing', daemon.server.port)
     ).resolves.toBeUndefined();
   });
+
+  it('omits model from thread/start when none is specified', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method, params) => {
+          if (method === 'thread/start') {
+            expect(params).not.toHaveProperty('model');
+            return { thread: { id: 'thr_default_model' } };
+          }
+          return {};
+        }
+      }
+    ]);
+
+    const created = await backend.createSession('zed-mid', '/tmp/workspace');
+    expect(created.threadId).toBe('thr_default_model');
+    expect(created.model).toBeUndefined();
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start']);
+  });
+
+  it('omits model from thread/resume and turn/start when sending without a model', async () => {
+    const { clients, backend } = createHarness([
+      {
+        onRequest: (method, params) => {
+          if (method === 'thread/resume') {
+            expect(params).not.toHaveProperty('model');
+            return {};
+          }
+          if (method === 'turn/start') {
+            return { turn: { id: 'turn_1' } };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    await backend.sendMessage('zed-mid', 'thr_default_model', 'hello', {
+      workspacePath: '/tmp/workspace'
+    });
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'turn/start']);
+  });
+
+  it('surfaces error notification messages when turn/completed lacks error detail', async () => {
+    const client = new CodexWebSocketRpcClient('ws://127.0.0.1:65535');
+    const notify = (n: { method: string; params?: unknown }) =>
+      (client as unknown as { handleNotification: (n: { method: string; params?: unknown }) => void }).handleNotification(n);
+
+    const waitPromise = client.waitForTurnCompletion(1_000, 'thr_err', 'turn_err');
+
+    notify({
+      method: 'error',
+      params: {
+        error: { message: "The 'gpt-5.3-codex' model is not supported" },
+        willRetry: false,
+        threadId: 'thr_err',
+        turnId: 'turn_err'
+      }
+    });
+    notify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thr_err',
+        turn: { id: 'turn_err', status: 'failed' }
+      }
+    });
+
+    await expect(waitPromise).resolves.toMatchObject({
+      status: 'failed',
+      errorMessage: "The 'gpt-5.3-codex' model is not supported"
+    });
+  });
+
+  it('ignores retryable error notifications', async () => {
+    const client = new CodexWebSocketRpcClient('ws://127.0.0.1:65535');
+    const notify = (n: { method: string; params?: unknown }) =>
+      (client as unknown as { handleNotification: (n: { method: string; params?: unknown }) => void }).handleNotification(n);
+
+    const waitPromise = client.waitForTurnCompletion(1_000, 'thr_retry');
+
+    notify({
+      method: 'error',
+      params: {
+        error: { message: 'transient stream error' },
+        willRetry: true,
+        threadId: 'thr_retry'
+      }
+    });
+    notify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thr_retry',
+        turn: { id: 'turn_1', status: 'completed' }
+      }
+    });
+
+    await expect(waitPromise).resolves.toMatchObject({
+      status: 'completed',
+      errorMessage: undefined
+    });
+  });
+
+  it('reports failure when a reconnect wait finds an empty completed turn on a systemError thread', async () => {
+    const { backend } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {
+              thread: {
+                status: { type: 'systemError' },
+                turns: [
+                  {
+                    id: 'turn_silent',
+                    status: 'failed',
+                    error: { message: 'model not supported on this account' }
+                  }
+                ]
+              }
+            };
+          }
+          if (method === 'thread/read') {
+            return {
+              thread: {
+                turns: [
+                  {
+                    id: 'turn_silent',
+                    status: 'completed',
+                    items: [{ type: 'userMessage', id: 'item-1', content: [] }]
+                  }
+                ]
+              }
+            };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.waitForThread('vex-mid', 'thr_silent', 5_000, 'turn_silent');
+    expect(result.status).toBe('failed');
+    expect(result.errorMessage).toBe('model not supported on this account');
+  });
+
+  describe('thread goals', () => {
+    const sampleGoal = {
+      threadId: 'thr_goal',
+      objective: 'ship the feature',
+      status: 'active',
+      tokenBudget: 50_000,
+      tokensUsed: 1_234,
+      timeUsedSeconds: 60,
+      createdAt: 1_781_000_000,
+      updatedAt: 1_781_000_100
+    };
+
+    it('sets a goal via thread/goal/set after resuming the thread', async () => {
+      const { backend, clients } = createHarness([
+        {
+          onRequest: (method, params) => {
+            if (method === 'thread/resume') {
+              expect(params).toEqual({ threadId: 'thr_goal' });
+              return {};
+            }
+            if (method === 'thread/goal/set') {
+              expect(params).toEqual({
+                threadId: 'thr_goal',
+                objective: 'ship the feature',
+                tokenBudget: 50_000
+              });
+              return { goal: sampleGoal };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      const goal = await backend.setThreadGoal('thr_goal', {
+        objective: 'ship the feature',
+        tokenBudget: 50_000
+      });
+      expect(goal).toEqual(sampleGoal);
+      expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'thread/goal/set']);
+    });
+
+    it('sends only status when pausing a goal', async () => {
+      const { backend } = createHarness([
+        {
+          onRequest: (method, params) => {
+            if (method === 'thread/resume') {
+              return {};
+            }
+            if (method === 'thread/goal/set') {
+              expect(params).toEqual({ threadId: 'thr_goal', status: 'paused' });
+              return { goal: { ...sampleGoal, status: 'paused' } };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      const goal = await backend.setThreadGoal('thr_goal', { status: 'paused' });
+      expect(goal.status).toBe('paused');
+    });
+
+    it('returns the current goal from thread/goal/get', async () => {
+      const { backend } = createHarness([
+        {
+          onRequest: (method) => {
+            if (method === 'thread/resume') {
+              return {};
+            }
+            if (method === 'thread/goal/get') {
+              return { goal: sampleGoal };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      await expect(backend.getThreadGoal('thr_goal')).resolves.toEqual(sampleGoal);
+    });
+
+    it('returns undefined when no goal is set', async () => {
+      const { backend } = createHarness([
+        {
+          onRequest: (method) => {
+            if (method === 'thread/resume') {
+              return {};
+            }
+            if (method === 'thread/goal/get') {
+              return { goal: null };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      await expect(backend.getThreadGoal('thr_goal')).resolves.toBeUndefined();
+    });
+
+    it('clears a goal via thread/goal/clear', async () => {
+      const { backend, clients } = createHarness([
+        {
+          onRequest: (method, params) => {
+            if (method === 'thread/resume') {
+              return {};
+            }
+            if (method === 'thread/goal/clear') {
+              expect(params).toEqual({ threadId: 'thr_goal' });
+              return { cleared: true };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      await expect(backend.clearThreadGoal('thr_goal')).resolves.toBe(true);
+      expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'thread/goal/clear']);
+    });
+
+    it('rejects goal operations without a thread id', async () => {
+      const { backend } = createHarness([]);
+      await expect(backend.setThreadGoal('  ', { objective: 'x' })).rejects.toThrow(/thread ID is required/i);
+      await expect(backend.getThreadGoal('')).rejects.toThrow(/thread ID is required/i);
+      await expect(backend.clearThreadGoal('')).rejects.toThrow(/thread ID is required/i);
+    });
+
+    it('throws on malformed goal responses', async () => {
+      const { backend } = createHarness([
+        {
+          onRequest: (method) => {
+            if (method === 'thread/resume') {
+              return {};
+            }
+            if (method === 'thread/goal/get') {
+              return { goal: { objective: 'missing fields' } };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      await expect(backend.getThreadGoal('thr_goal')).rejects.toThrow(/unexpected shape/i);
+    });
+  });
 });

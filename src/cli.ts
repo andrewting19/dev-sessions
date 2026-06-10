@@ -3,14 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, CommanderError, Option } from 'commander';
 import pkg from '../package.json';
-import { createDefaultSessionManager, CreateSessionOptions, WaitOptions } from './session-manager';
+import { createDefaultSessionManager, CreateSessionOptions, GoalWaitResult, WaitOptions } from './session-manager';
 import {
   getGatewayDaemonStatus,
   installGatewayDaemon,
   uninstallGatewayDaemon
 } from './gateway/daemon';
 import { resolveGatewayCliBinary, resolveGatewayPort, startGatewayServer } from './gateway/server';
-import { AgentTurnStatus, SessionTurn, StoredSession, WaitResult } from './types';
+import { AgentTurnStatus, GoalUpdate, SessionTurn, StoredSession, ThreadGoal, WaitResult } from './types';
 
 interface CliIO {
   stdout: Pick<NodeJS.WriteStream, 'write'>;
@@ -50,6 +50,10 @@ export interface SessionManagerLike {
   waitForSession(championId: string, options: WaitOptions): Promise<WaitResult>;
   getSessionLogs(championId: string): Promise<SessionTurn[]>;
   inspectSession(championId: string): Promise<StoredSession>;
+  setSessionGoal(championId: string, update: GoalUpdate): Promise<ThreadGoal>;
+  getSessionGoal(championId: string): Promise<ThreadGoal | undefined>;
+  clearSessionGoal(championId: string): Promise<boolean>;
+  waitForSessionGoal(championId: string, options: WaitOptions): Promise<GoalWaitResult>;
 }
 
 class CliError extends Error {
@@ -117,6 +121,17 @@ function formatSessionsTable(sessions: StoredSession[]): string {
     formatRow(separator),
     ...rows.map((row) => formatRow(row))
   ].join('\n');
+}
+
+function formatGoal(goal: ThreadGoal): string {
+  const lines = [
+    `objective: ${goal.objective}`,
+    `status: ${goal.status}`,
+    `tokens used: ${goal.tokensUsed}`,
+    `token budget: ${goal.tokenBudget ?? 'none'}`,
+    `time used: ${goal.timeUsedSeconds}s`
+  ];
+  return lines.join('\n');
 }
 
 async function pathExists(candidatePath: string): Promise<boolean> {
@@ -238,19 +253,22 @@ export function buildProgram(
         .choices(['native', 'docker'])
         .default('native')
     )
+    .option('--model <model>', 'Model override (codex only; defaults to the codex-configured model)')
     .option('-q, --quiet', 'Only print session ID (for scripts)')
     .action(async (options: {
       path: string;
       description?: string;
       cli: 'claude' | 'codex';
       mode: 'native' | 'docker';
+      model?: string;
       quiet?: boolean;
     }) => {
       const session = await manager.createSession({
         path: options.path,
         cli: options.cli,
         description: options.description,
-        mode: options.mode
+        mode: options.mode,
+        model: options.model
       });
 
       if (options.quiet) {
@@ -281,6 +299,45 @@ export function buildProgram(
 
       await manager.sendMessage(id, payload);
       io.stdout.write(`Sent message to ${id}\n`);
+    });
+
+  program
+    .command('ask <id> [message]')
+    .description('Send a message, wait for the reply, and print it (send + wait + last-message in one step)')
+    .option('-f, --file <filePath>', 'Read message content from a file')
+    .option('-t, --timeout <seconds>', 'Timeout in seconds', '300')
+    .action(async (id: string, message: string | undefined, options: { file?: string; timeout: string }) => {
+      if (options.file && message) {
+        throw new CliError('Provide either <message> or --file, not both');
+      }
+
+      let payload = message;
+      if (options.file) {
+        payload = await readFile(path.resolve(options.file), 'utf8');
+      }
+
+      if (!payload || payload.trim().length === 0) {
+        throw new CliError('Message is required. Use <message> or --file <path>.');
+      }
+
+      const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
+
+      await manager.sendMessage(id, payload);
+      const result = await manager.waitForSession(id, { timeoutSeconds });
+      if (result.timedOut) {
+        throw new CliError(
+          `Timed out waiting for ${id} after ${timeoutSeconds}s (the agent keeps working; ` +
+          `use 'wait ${id}' then 'last-message ${id}' to pick up the reply)`,
+          124
+        );
+      }
+
+      const blocks = await manager.getLastAssistantTextBlocks(id, 1);
+      if (blocks.length === 0) {
+        return;
+      }
+
+      io.stdout.write(`${blocks.join('\n\n')}\n`);
     });
 
   program
@@ -335,12 +392,31 @@ export function buildProgram(
 
   program
     .command('wait <id>')
-    .description('Wait until assistant responds to latest user message')
+    .description('Wait until assistant responds to latest user message (or, with --goal, until the goal settles)')
     .option('-t, --timeout <seconds>', 'Timeout in seconds', '300')
     .option('-i, --interval <seconds>', 'Polling interval in seconds', '2')
-    .action(async (id: string, options: { timeout: string; interval: string }) => {
+    .option(
+      '--goal',
+      'Wait until the session goal reaches a terminal state (complete, paused, blocked, usageLimited, budgetLimited); prints the final status'
+    )
+    .action(async (id: string, options: { timeout: string; interval: string; goal?: boolean }) => {
       const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
       const intervalSeconds = parsePositiveNumber(options.interval, '--interval');
+
+      if (options.goal) {
+        const goalResult = await manager.waitForSessionGoal(id, {
+          timeoutSeconds,
+          intervalSeconds
+        });
+
+        if (goalResult.timedOut) {
+          throw new CliError(`Timed out waiting for goal on ${id}`, 124);
+        }
+
+        io.stdout.write(`${goalResult.goal ? goalResult.goal.status : 'cleared'}\n`);
+        return;
+      }
+
       const result = await manager.waitForSession(id, {
         timeoutSeconds,
         intervalSeconds
@@ -351,6 +427,84 @@ export function buildProgram(
       }
 
       io.stdout.write('completed\n');
+    });
+
+  program
+    .command('goal <id> [objective...]')
+    .description(
+      'Manage an autonomous goal on a codex session. With an objective, the agent works toward it ' +
+      'across turns until complete. Without arguments, shows the current goal.'
+    )
+    .option('--budget <tokens>', 'Token budget for the goal')
+    .option('--pause', 'Pause the active goal')
+    .option('--resume', 'Resume a paused or blocked goal')
+    .option('--clear', 'Clear the goal')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (
+      id: string,
+      objectiveWords: string[],
+      options: { budget?: string; pause?: boolean; resume?: boolean; clear?: boolean; json?: boolean }
+    ) => {
+      const objective = objectiveWords.join(' ').trim();
+      const actionFlags = [options.pause, options.resume, options.clear].filter(Boolean).length;
+      if (actionFlags > 1) {
+        throw new CliError('Use only one of --pause, --resume, --clear');
+      }
+      if (options.clear && (objective.length > 0 || options.budget !== undefined)) {
+        throw new CliError('--clear cannot be combined with an objective or --budget');
+      }
+      if ((options.pause || options.resume) && objective.length > 0) {
+        throw new CliError('--pause/--resume cannot be combined with an objective');
+      }
+
+      if (options.clear) {
+        const cleared = await manager.clearSessionGoal(id);
+        if (options.json) {
+          io.stdout.write(`${JSON.stringify({ cleared })}\n`);
+          return;
+        }
+        io.stdout.write(cleared ? `Cleared goal for ${id}\n` : `No goal to clear for ${id}\n`);
+        return;
+      }
+
+      const update: GoalUpdate = {};
+      if (objective.length > 0) {
+        update.objective = objective;
+        // A new objective means "start pursuing it". Without this, setting an
+        // objective on a thread whose previous goal completed leaves the goal
+        // in 'complete' status and the agent never starts.
+        update.status = 'active';
+      }
+      if (options.pause) {
+        update.status = 'paused';
+      }
+      if (options.resume) {
+        update.status = 'active';
+      }
+      if (options.budget !== undefined) {
+        update.tokenBudget = parsePositiveInteger(options.budget, '--budget');
+      }
+
+      if (Object.keys(update).length === 0) {
+        const goal = await manager.getSessionGoal(id);
+        if (options.json) {
+          io.stdout.write(`${JSON.stringify(goal ?? null, null, 2)}\n`);
+          return;
+        }
+        if (!goal) {
+          io.stdout.write(`No goal set for ${id}\n`);
+          return;
+        }
+        io.stdout.write(`${formatGoal(goal)}\n`);
+        return;
+      }
+
+      const goal = await manager.setSessionGoal(id, update);
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(goal, null, 2)}\n`);
+        return;
+      }
+      io.stdout.write(`${formatGoal(goal)}\n`);
     });
 
   program

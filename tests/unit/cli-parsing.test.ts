@@ -33,7 +33,28 @@ function createManagerMock(): SessionManagerLike {
       { role: 'human', text: 'hello' },
       { role: 'assistant', text: 'world' }
     ]),
-    inspectSession: vi.fn().mockResolvedValue(createMockSession('fizz-top'))
+    inspectSession: vi.fn().mockResolvedValue(createMockSession('fizz-top')),
+    setSessionGoal: vi.fn().mockResolvedValue(createMockGoal('active')),
+    getSessionGoal: vi.fn().mockResolvedValue(createMockGoal('active')),
+    clearSessionGoal: vi.fn().mockResolvedValue(true),
+    waitForSessionGoal: vi.fn().mockResolvedValue({
+      goal: createMockGoal('complete'),
+      timedOut: false,
+      elapsedMs: 1000
+    })
+  };
+}
+
+function createMockGoal(status: 'active' | 'paused' | 'complete') {
+  return {
+    threadId: 'thr_1',
+    objective: 'ship the feature',
+    status,
+    tokenBudget: null,
+    tokensUsed: 10,
+    timeUsedSeconds: 5,
+    createdAt: 1,
+    updatedAt: 2
   };
 }
 
@@ -257,6 +278,137 @@ describe('CLI argument parsing', () => {
       timeoutSeconds: 12,
       intervalSeconds: 4
     });
+  });
+
+  it('parses ask command as send + wait + last-message', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'ask', 'fizz-top', 'what is 2+2?', '--timeout', '60']);
+
+    expect(manager.sendMessage).toHaveBeenCalledWith('fizz-top', 'what is 2+2?');
+    expect(manager.waitForSession).toHaveBeenCalledWith('fizz-top', { timeoutSeconds: 60 });
+    expect(manager.getLastAssistantTextBlocks).toHaveBeenCalledWith('fizz-top', 1);
+    expect(output.stdout).toBe('done\n');
+  });
+
+  it('ask exits 124 with a recovery hint when the wait times out', async () => {
+    const manager = createManagerMock();
+    (manager.waitForSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+      completed: false,
+      timedOut: true,
+      elapsedMs: 60_000
+    });
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'ask', 'fizz-top', 'long task'])
+    ).rejects.toMatchObject({ exitCode: 124 });
+    expect(manager.getLastAssistantTextBlocks).not.toHaveBeenCalled();
+  });
+
+  it('parses goal set with budget and implies active status', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync([
+      'node',
+      'dev-sessions',
+      'goal',
+      'fizz-top',
+      'refactor',
+      'the',
+      'parser',
+      '--budget',
+      '50000'
+    ]);
+
+    expect(manager.setSessionGoal).toHaveBeenCalledWith('fizz-top', {
+      objective: 'refactor the parser',
+      status: 'active',
+      tokenBudget: 50_000
+    });
+  });
+
+  it('parses goal show, pause, resume, and clear', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top']);
+    expect(manager.getSessionGoal).toHaveBeenCalledWith('fizz-top');
+    expect(output.stdout).toContain('objective: ship the feature');
+    expect(output.stdout).toContain('status: active');
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--pause']);
+    expect(manager.setSessionGoal).toHaveBeenCalledWith('fizz-top', { status: 'paused' });
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--resume']);
+    expect(manager.setSessionGoal).toHaveBeenCalledWith('fizz-top', { status: 'active' });
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--clear']);
+    expect(manager.clearSessionGoal).toHaveBeenCalledWith('fizz-top');
+  });
+
+  it('prints no-goal message when no goal is set', async () => {
+    const manager = createManagerMock();
+    (manager.getSessionGoal as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top']);
+    expect(output.stdout).toBe('No goal set for fizz-top\n');
+  });
+
+  it('rejects conflicting goal flags', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--pause', '--clear'])
+    ).rejects.toThrow('Use only one of --pause, --resume, --clear');
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', 'objective', '--clear'])
+    ).rejects.toThrow('--clear cannot be combined');
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', 'objective', '--pause'])
+    ).rejects.toThrow('--pause/--resume cannot be combined');
+  });
+
+  it('parses wait --goal and prints the terminal goal status', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--goal', '--timeout', '30']);
+
+    expect(manager.waitForSessionGoal).toHaveBeenCalledWith('fizz-top', {
+      timeoutSeconds: 30,
+      intervalSeconds: 2
+    });
+    expect(manager.waitForSession).not.toHaveBeenCalled();
+    expect(output.stdout).toBe('complete\n');
+  });
+
+  it('wait --goal exits 124 on timeout', async () => {
+    const manager = createManagerMock();
+    (manager.waitForSessionGoal as ReturnType<typeof vi.fn>).mockResolvedValue({
+      goal: createMockGoal('active'),
+      timedOut: true,
+      elapsedMs: 30_000
+    });
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--goal'])
+    ).rejects.toMatchObject({ exitCode: 124 });
   });
 
   it('rejects non-integer numeric flags', async () => {

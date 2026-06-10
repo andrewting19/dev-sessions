@@ -13,7 +13,7 @@ import {
 import { toTmuxSessionName } from '../../src/champion-ids';
 import { SessionManager } from '../../src/session-manager';
 import { SessionStore } from '../../src/session-store';
-import { AgentTurnStatus, SessionMode } from '../../src/types';
+import { AgentTurnStatus, SessionMode, ThreadGoal } from '../../src/types';
 
 interface CreateCall {
   tmuxSessionName: string;
@@ -106,7 +106,7 @@ class FakeCodexBackend extends CodexAppServerBackend {
   override async createSession(
     championId: string,
     workspacePath: string,
-    model: string = 'gpt-5.3-codex'
+    model: string = 'gpt-5.5'
   ): Promise<{ threadId: string; model: string }> {
     this.createCalls.push({
       championId,
@@ -187,6 +187,40 @@ class FakeCodexBackend extends CodexAppServerBackend {
     this.sessionExistsCalls.push({ championId, pid, port, threadId });
     return this.liveSessions.has(championId);
   }
+
+  readonly goalCalls: Array<{ kind: 'set' | 'get' | 'clear'; threadId: string; update?: unknown }> = [];
+
+  override async setThreadGoal(
+    threadId: string,
+    update: { objective?: string; status?: string; tokenBudget?: number | null }
+  ): Promise<ThreadGoal> {
+    this.goalCalls.push({ kind: 'set', threadId, update });
+    return {
+      threadId,
+      objective: update.objective ?? 'existing objective',
+      status: (update.status as ThreadGoal['status']) ?? 'active',
+      tokenBudget: update.tokenBudget ?? null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 1
+    };
+  }
+
+  goalSequence: Array<ThreadGoal | undefined> = [];
+
+  override async getThreadGoal(threadId: string): Promise<ThreadGoal | undefined> {
+    this.goalCalls.push({ kind: 'get', threadId });
+    if (this.goalSequence.length === 0) {
+      return undefined;
+    }
+    return this.goalSequence.length > 1 ? this.goalSequence.shift() : this.goalSequence[0];
+  }
+
+  override async clearThreadGoal(threadId: string): Promise<boolean> {
+    this.goalCalls.push({ kind: 'clear', threadId });
+    return true;
+  }
 }
 
 describe('SessionManager', () => {
@@ -221,6 +255,8 @@ describe('SessionManager', () => {
     await mkdir('/tmp/codex-status-latch', { recursive: true });
     await mkdir('/tmp/claude-mixed', { recursive: true });
     await mkdir('/tmp/codex-mixed', { recursive: true });
+    await mkdir('/tmp/codex-goal', { recursive: true });
+    await mkdir('/tmp/claude-goal', { recursive: true });
   });
 
   afterEach(async () => {
@@ -349,7 +385,7 @@ describe('SessionManager', () => {
       cli: 'codex',
       path: '/tmp/codex-project',
       description: 'codex session',
-      model: 'gpt-5.3-codex'
+      model: 'gpt-5.5'
     });
 
     expect(session.cli).toBe('codex');
@@ -359,7 +395,7 @@ describe('SessionManager', () => {
       {
         championId: session.championId,
         workspacePath: '/tmp/codex-project',
-        model: 'gpt-5.3-codex'
+        model: 'gpt-5.5'
       }
     ]);
 
@@ -371,7 +407,7 @@ describe('SessionManager', () => {
         message: 'run lint',
         options: {
           workspacePath: '/tmp/codex-project',
-          model: 'gpt-5.3-codex'
+          model: 'gpt-5.5'
         }
       }
     ]);
@@ -421,6 +457,120 @@ describe('SessionManager', () => {
         count: 1
       }
     ]);
+  });
+
+  it('routes goal operations to the codex backend with the stored thread id', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-goal'
+    });
+
+    const goal = await manager.setSessionGoal(session.championId, {
+      objective: 'fix all lint errors',
+      tokenBudget: 10_000
+    });
+    expect(goal.objective).toBe('fix all lint errors');
+    expect(goal.status).toBe('active');
+
+    await manager.getSessionGoal(session.championId);
+    await manager.clearSessionGoal(session.championId);
+
+    expect(codexBackend.goalCalls).toEqual([
+      {
+        kind: 'set',
+        threadId: session.internalId,
+        update: { objective: 'fix all lint errors', tokenBudget: 10_000 }
+      },
+      { kind: 'get', threadId: session.internalId },
+      { kind: 'clear', threadId: session.internalId }
+    ]);
+  });
+
+  it('waits for a goal to reach a terminal state', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-goal'
+    });
+
+    const baseGoal: ThreadGoal = {
+      threadId: session.internalId,
+      objective: 'finish the migration',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    codexBackend.goalSequence = [
+      { ...baseGoal },
+      { ...baseGoal, status: 'active' },
+      { ...baseGoal, status: 'complete' }
+    ];
+
+    const result = await manager.waitForSessionGoal(session.championId, {
+      timeoutSeconds: 10,
+      intervalSeconds: 0.5
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.goal?.status).toBe('complete');
+  });
+
+  it('times out goal waits while the goal stays active', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-goal'
+    });
+
+    codexBackend.goalSequence = [
+      {
+        threadId: session.internalId,
+        objective: 'endless work',
+        status: 'active',
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ];
+
+    const result = await manager.waitForSessionGoal(session.championId, {
+      timeoutSeconds: 1,
+      intervalSeconds: 0.5
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(result.goal?.status).toBe('active');
+  });
+
+  it('throws when waiting on a goal that was never set', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-goal'
+    });
+
+    codexBackend.goalSequence = [];
+    await expect(
+      manager.waitForSessionGoal(session.championId, { timeoutSeconds: 1 })
+    ).rejects.toThrow(/no goal set/i);
+  });
+
+  it('rejects goal operations on claude sessions', async () => {
+    const session = await manager.createSession({
+      path: '/tmp/claude-goal'
+    });
+
+    await expect(manager.setSessionGoal(session.championId, { objective: 'x' })).rejects.toThrow(
+      /only supported for codex sessions/i
+    );
+    await expect(manager.getSessionGoal(session.championId)).rejects.toThrow(
+      /only supported for codex sessions/i
+    );
+    await expect(manager.clearSessionGoal(session.championId)).rejects.toThrow(
+      /only supported for codex sessions/i
+    );
   });
 
   it('refreshes codex last-message from backend when a completed turn may make store cache stale', async () => {

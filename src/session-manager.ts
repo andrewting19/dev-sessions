@@ -8,7 +8,7 @@ import { CodexBackend } from './backends/codex-backend';
 import { CodexAppServerBackend } from './backends/codex-appserver';
 import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { SessionStore, createDefaultSessionStore } from './session-store';
-import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from './types';
+import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from './types';
 
 export interface CreateSessionOptions {
   path?: string;
@@ -22,6 +22,21 @@ export interface WaitOptions {
   timeoutSeconds?: number;
   intervalSeconds?: number;
 }
+
+export interface GoalWaitResult {
+  // Undefined when the goal was cleared while waiting.
+  goal?: ThreadGoal;
+  timedOut: boolean;
+  elapsedMs: number;
+}
+
+const TERMINAL_GOAL_STATUSES: ReadonlySet<string> = new Set([
+  'complete',
+  'paused',
+  'blocked',
+  'usageLimited',
+  'budgetLimited'
+]);
 
 export class SessionManager {
   private readonly backends: Map<SessionCli, Backend>;
@@ -107,6 +122,76 @@ export class SessionManager {
     if (Object.keys(postSendFields).length > 0) {
       await this.store.updateSession(championId, postSendFields);
     }
+  }
+
+  async setSessionGoal(championId: string, update: GoalUpdate): Promise<ThreadGoal> {
+    const { session, backend } = await this.requireGoalBackend(championId);
+    if (!backend.setGoal) {
+      throw new Error('Unreachable');
+    }
+    return backend.setGoal(session, update);
+  }
+
+  async getSessionGoal(championId: string): Promise<ThreadGoal | undefined> {
+    const { session, backend } = await this.requireGoalBackend(championId);
+    if (!backend.getGoal) {
+      throw new Error('Unreachable');
+    }
+    return backend.getGoal(session);
+  }
+
+  async clearSessionGoal(championId: string): Promise<boolean> {
+    const { session, backend } = await this.requireGoalBackend(championId);
+    if (!backend.clearGoal) {
+      throw new Error('Unreachable');
+    }
+    return backend.clearGoal(session);
+  }
+
+  async waitForSessionGoal(championId: string, options: WaitOptions = {}): Promise<GoalWaitResult> {
+    const { session, backend } = await this.requireGoalBackend(championId);
+    if (!backend.getGoal) {
+      throw new Error('Unreachable');
+    }
+
+    const timeoutMs = Math.max(1, (options.timeoutSeconds ?? 300) * 1000);
+    const intervalMs = Math.max(500, (options.intervalSeconds ?? 5) * 1000);
+    const startTime = Date.now();
+
+    let goal = await backend.getGoal(session);
+    if (!goal) {
+      throw new Error(`No goal set for ${championId}`);
+    }
+
+    while (!TERMINAL_GOAL_STATUSES.has(goal.status)) {
+      const elapsedMs = Date.now() - startTime;
+      if (elapsedMs >= timeoutMs) {
+        return { goal, timedOut: true, elapsedMs };
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, Math.min(intervalMs, timeoutMs - elapsedMs));
+      });
+
+      goal = await backend.getGoal(session);
+      if (!goal) {
+        // Goal was cleared out-of-band; nothing left to wait for.
+        return { goal: undefined, timedOut: false, elapsedMs: Date.now() - startTime };
+      }
+    }
+
+    return { goal, timedOut: false, elapsedMs: Date.now() - startTime };
+  }
+
+  private async requireGoalBackend(championId: string): Promise<{ session: StoredSession; backend: Backend }> {
+    const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    if (!backend.setGoal || !backend.getGoal || !backend.clearGoal) {
+      throw new Error(
+        `Goals are only supported for codex sessions; ${championId} is a ${session.cli} session`
+      );
+    }
+    return { session, backend };
   }
 
   async killSession(championId: string): Promise<void> {

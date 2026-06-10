@@ -60,6 +60,14 @@ interface KillBody {
   sessionId?: unknown;
 }
 
+interface GoalBody {
+  sessionId?: unknown;
+  objective?: unknown;
+  status?: unknown;
+  tokenBudget?: unknown;
+  clear?: unknown;
+}
+
 function ensureNonEmptyString(value: unknown, fieldName: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new Error(`${fieldName} is required and must be a non-empty string`);
@@ -419,10 +427,26 @@ export function createGatewayApp(
         intervalSeconds = parsePositiveIntegerQuery(req.query.interval, 2, 'interval');
       }
 
+      const waitForGoal = req.query.goal === '1' || req.query.goal === 'true';
       const args = ['wait', sessionId, '--timeout', String(timeoutSeconds)];
       if (intervalSeconds !== undefined) {
         args.push('--interval', String(intervalSeconds));
       }
+      if (waitForGoal) {
+        args.push('--goal');
+      }
+
+      const fetchFinalGoal = async (): Promise<unknown> => {
+        if (!waitForGoal) {
+          return undefined;
+        }
+        try {
+          const goalResult = await executeCommand(['goal', sessionId, '--json']);
+          return JSON.parse(goalResult.stdout) as unknown;
+        } catch {
+          return undefined;
+        }
+      };
 
       // Flush headers immediately so the client's fetch headersTimeout (default 300s
       // in Node/undici) is satisfied. Then send periodic keepalive newlines to prevent
@@ -437,6 +461,7 @@ export function createGatewayApp(
       const startTime = Date.now();
       try {
         const result = await executeCommand(args);
+        const finalGoal = await fetchFinalGoal();
         clearInterval(keepaliveTimer);
         res.end(JSON.stringify({
           ok: true,
@@ -445,11 +470,13 @@ export function createGatewayApp(
             timedOut: false,
             elapsedMs: Date.now() - startTime
           },
+          ...(waitForGoal ? { goal: finalGoal ?? null } : {}),
           output: serializeCommandResult(result)
         }));
       } catch (error: unknown) {
-        clearInterval(keepaliveTimer);
         if (isGatewayCommandError(error) && error.result.exitCode === 124) {
+          const finalGoal = await fetchFinalGoal();
+          clearInterval(keepaliveTimer);
           res.end(JSON.stringify({
             ok: true,
             waitResult: {
@@ -457,11 +484,13 @@ export function createGatewayApp(
               timedOut: true,
               elapsedMs: Date.now() - startTime
             },
+            ...(waitForGoal ? { goal: finalGoal ?? null } : {}),
             output: serializeCommandResult(error.result)
           }));
           return;
         }
 
+        clearInterval(keepaliveTimer);
         throw error;
       }
     } catch (error: unknown) {
@@ -547,6 +576,80 @@ export function createGatewayApp(
       res.json({
         ok: true,
         session,
+        output: serializeCommandResult(result)
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error && /required and must be a non-empty string/.test(error.message)) {
+        jsonError(res, 400, error.message);
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/goal', async (req: Request, res: Response) => {
+    try {
+      const sessionId = ensureNonEmptyString(req.query.id, 'id');
+      const result = await executeCommand(['goal', sessionId, '--json']);
+      res.json({
+        ok: true,
+        goal: JSON.parse(result.stdout) as unknown,
+        output: serializeCommandResult(result)
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error && /required and must be a non-empty string/.test(error.message)) {
+        jsonError(res, 400, error.message);
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post('/goal', async (req: Request<{}, unknown, GoalBody>, res: Response) => {
+    try {
+      const sessionId = ensureNonEmptyString(req.body.sessionId, 'sessionId');
+      const args = ['goal', sessionId];
+
+      if (req.body.clear === true) {
+        if (req.body.objective !== undefined || req.body.status !== undefined || req.body.tokenBudget !== undefined) {
+          jsonError(res, 400, 'clear cannot be combined with objective, status, or tokenBudget');
+          return;
+        }
+        args.push('--clear');
+      } else {
+        if (req.body.objective !== undefined) {
+          if (typeof req.body.objective !== 'string' || req.body.objective.trim().length === 0) {
+            jsonError(res, 400, 'objective must be a non-empty string');
+            return;
+          }
+          args.push(req.body.objective);
+        }
+        if (req.body.status !== undefined) {
+          if (req.body.status !== 'active' && req.body.status !== 'paused') {
+            jsonError(res, 400, 'status must be one of: active, paused');
+            return;
+          }
+          args.push(req.body.status === 'paused' ? '--pause' : '--resume');
+        }
+        if (req.body.tokenBudget !== undefined) {
+          if (typeof req.body.tokenBudget !== 'number' || !Number.isInteger(req.body.tokenBudget) || req.body.tokenBudget <= 0) {
+            jsonError(res, 400, 'tokenBudget must be a positive integer');
+            return;
+          }
+          args.push('--budget', String(req.body.tokenBudget));
+        }
+        if (args.length === 2) {
+          jsonError(res, 400, 'Provide at least one of objective, status, tokenBudget, or clear');
+          return;
+        }
+      }
+
+      args.push('--json');
+      const result = await executeCommand(args);
+      const payload = JSON.parse(result.stdout) as unknown;
+      res.json({
+        ok: true,
+        ...(req.body.clear === true ? { cleared: (payload as { cleared?: boolean }).cleared === true } : { goal: payload }),
         output: serializeCommandResult(result)
       });
     } catch (error: unknown) {

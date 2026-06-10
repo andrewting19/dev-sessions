@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { AgentTurnStatus, SessionCli, SessionMode, SessionTurn, StoredSession, WaitResult } from '../types';
+import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from '../types';
 
 const DEFAULT_GATEWAY_BASE_URL = 'http://host.docker.internal:6767';
 const DEFAULT_CONTAINER_WORKSPACE = '/workspace';
@@ -215,6 +215,64 @@ export class GatewaySessionManager {
     const query = new URLSearchParams({ id: championId });
     const response = await this.request<{ session: StoredSession }>(`/inspect?${query.toString()}`);
     return response.session;
+  }
+
+  async setSessionGoal(championId: string, update: GoalUpdate): Promise<ThreadGoal> {
+    const payload: Record<string, unknown> = { sessionId: championId };
+    if (update.objective !== undefined) {
+      payload.objective = update.objective;
+    }
+    if (update.status !== undefined) {
+      payload.status = update.status;
+    }
+    if (update.tokenBudget !== undefined && update.tokenBudget !== null) {
+      payload.tokenBudget = update.tokenBudget;
+    }
+
+    const response = await this.request<{ goal: ThreadGoal }>('/goal', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    return response.goal;
+  }
+
+  async getSessionGoal(championId: string): Promise<ThreadGoal | undefined> {
+    const query = new URLSearchParams({ id: championId });
+    const response = await this.request<{ goal: ThreadGoal | null }>(`/goal?${query.toString()}`);
+    return response.goal ?? undefined;
+  }
+
+  async clearSessionGoal(championId: string): Promise<boolean> {
+    const response = await this.request<{ cleared: boolean }>('/goal', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: championId, clear: true })
+    });
+    return response.cleared === true;
+  }
+
+  async waitForSessionGoal(
+    championId: string,
+    options: WaitOptions = {}
+  ): Promise<{ goal?: ThreadGoal; timedOut: boolean; elapsedMs: number }> {
+    const timeoutSeconds = Math.max(1, options.timeoutSeconds ?? 300);
+    const query = new URLSearchParams({
+      id: championId,
+      timeout: String(timeoutSeconds),
+      goal: '1'
+    });
+
+    if (typeof options.intervalSeconds === 'number' && Number.isFinite(options.intervalSeconds)) {
+      query.set('interval', String(Math.max(1, options.intervalSeconds)));
+    }
+
+    const response = await this.request<WaitGatewayResponse & { goal?: ThreadGoal | null }>(
+      `/wait?${query.toString()}`
+    );
+    return {
+      goal: response.goal ?? undefined,
+      timedOut: response.waitResult.timedOut,
+      elapsedMs: response.waitResult.elapsedMs
+    };
   }
 
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {

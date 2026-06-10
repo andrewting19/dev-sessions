@@ -359,4 +359,93 @@ describe('gateway server', () => {
     expect(body.output.exitCode).toBe(1);
     expect(body.output.stderr).toContain('Session not found: missing-id');
   });
+
+  it('relays goal reads through the CLI --json output', async () => {
+    const goal = {
+      threadId: 'thr_1',
+      objective: 'ship it',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 5,
+      timeUsedSeconds: 12,
+      createdAt: 1,
+      updatedAt: 2
+    };
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
+      createCommandResult(args, `${JSON.stringify(goal)}\n`)
+    );
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/goal?id=fizz-top`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.goal).toEqual(goal);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--json']);
+  });
+
+  it('relays goal set, pause, and clear commands', async () => {
+    const goal = { threadId: 'thr_1', objective: 'ship it', status: 'active' };
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      const stdout = args.includes('--clear') ? '{"cleared":true}\n' : `${JSON.stringify(goal)}\n`;
+      return createCommandResult(args, stdout);
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const setResponse = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', objective: 'ship it', tokenBudget: 1000 })
+    });
+    expect(setResponse.status).toBe(200);
+    expect((await setResponse.json()).goal).toEqual(goal);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', 'ship it', '--budget', '1000', '--json']);
+
+    const pauseResponse = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', status: 'paused' })
+    });
+    expect(pauseResponse.status).toBe(200);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--pause', '--json']);
+
+    const clearResponse = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', clear: true })
+    });
+    expect(clearResponse.status).toBe(200);
+    expect((await clearResponse.json()).cleared).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--clear', '--json']);
+  });
+
+  it('rejects invalid goal payloads', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>();
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const noFields = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top' })
+    });
+    expect(noFields.status).toBe(400);
+
+    const badStatus = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', status: 'blocked' })
+    });
+    expect(badStatus.status).toBe(400);
+
+    const clearWithObjective = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', clear: true, objective: 'x' })
+    });
+    expect(clearWithObjective.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
 });

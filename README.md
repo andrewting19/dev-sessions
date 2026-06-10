@@ -75,11 +75,19 @@ dev-sessions wait $s1 & dev-sessions wait $s2 & wait
 dev-sessions last-message $s1
 dev-sessions last-message $s2
 
+# One-shot round trip (send + wait + print reply)
+dev-sessions ask fizz-top "Summarize the failing tests." --timeout 120
+
 # Codex session (persistent app-server, conversation continuity)
 sid=$(dev-sessions create --cli codex -q)
 dev-sessions send $sid "hello"
 dev-sessions send $sid "what did I just say?"   # has context from first message
 dev-sessions last-message $sid                   # "You said hello"
+
+# Autonomous goal (codex only) — the agent keeps working across turns until done
+dev-sessions goal $sid "Make all unit tests pass, then mark the goal complete." --budget 200000
+dev-sessions wait $sid --goal --timeout 1800     # blocks until complete/paused/blocked/limited
+dev-sessions goal $sid --json                    # inspect objective, status, token usage
 
 # Clean up
 dev-sessions kill fizz-top
@@ -115,13 +123,26 @@ dev-sessions kill fizz-top
 initialize → initialized → thread/start → turn/start → [stream notifications] → turn/started → ... → turn/completed
 ```
 
-Key methods: `thread/start`, `turn/start`, `turn/interrupt`, `thread/list`, `thread/resume`, `thread/read`
-Key notifications: `turn/started`, `item/agentMessage/delta`, `turn/completed`, `thread/status/changed`
+Key methods: `thread/start`, `turn/start`, `turn/interrupt`, `thread/list`, `thread/resume`, `thread/read`, `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`
+Key notifications: `turn/started`, `item/agentMessage/delta`, `turn/completed`, `thread/status/changed`, `error`, `thread/goal/updated`
 
-**`ThreadStatus` JSON shape** — important, easy to get wrong:
-- `"idle"`, `"notLoaded"`, `"systemError"` serialize as **plain strings**
-- `"active"` serializes as `{ "active": { "activeFlags": [...] } }` — a tagged enum variant
-- Do NOT look for a `.type` field — that's the wrong shape
+**`ThreadStatus` JSON shape** — important, easy to get wrong. The parser supports all
+formats that have shipped:
+- Plain strings: `"idle"`, `"notLoaded"`, `"systemError"`
+- 0.104.0 tagged variant: `{ "active": { "activeFlags": [...] } }`
+- 0.105.0+ tagged objects (current): `{ "type": "idle" }`, `{ "type": "active", "activeFlags": [] }`, `{ "type": "systemError" }`
+
+**Goals** (`/goal` in the Codex TUI, stable since codex 0.133.0): a persisted
+per-thread objective. While a goal is `active` the app-server itself keeps starting
+continuation turns until the model marks the goal `complete` or `blocked` (or a
+token budget/usage limit lands it in `budgetLimited`/`usageLimited`). The model gets
+`get_goal`/`create_goal`/`update_goal` tools; clients control pause/resume/budget via
+`thread/goal/set`. dev-sessions surfaces this as the `goal` command and `wait --goal`.
+
+**Model selection**: no model is sent unless explicitly requested (`create --model`).
+Codex resolves its own configured default, which tracks model deprecations across
+releases — hardcoding a default here is how sessions silently break (a rejected model
+yields a turn recorded as `completed` with no output and a `systemError` thread).
 
 ### Champion IDs
 
@@ -137,9 +158,11 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 
 | Command | Description |
 |---------|-------------|
-| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `-q` quiet) |
+| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `--model <m>` codex model override, `-q` quiet) |
+| `ask <id> <msg>` | One-shot round trip: send, wait for the reply, print it (`--file`, `--timeout`) |
 | `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents) |
-| `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval) |
+| `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state instead |
+| `goal <id> [objective]` | Codex only: set/show an autonomous goal (`--budget` tokens, `--pause`, `--resume`, `--clear`, `--json`) |
 | `last-message <id>` | Get last N assistant messages (`-n` count) |
 | `status <id>` | Get session status: `idle`, `working`, or `waiting_for_input` |
 | `list` | List all active sessions (`--json` for machine-readable output) |

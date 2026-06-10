@@ -1,4 +1,4 @@
-import { SessionCli, SessionTurn, StoredSession } from '../types';
+import { GoalUpdate, SessionCli, SessionTurn, StoredSession, ThreadGoal } from '../types';
 import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
 import { CodexAppServerBackend } from './codex-appserver';
 
@@ -13,8 +13,7 @@ export class CodexBackend implements Backend {
   }
 
   async create(options: BackendCreateOptions): Promise<BackendCreateResult> {
-    const model = options.model ?? 'gpt-5.3-codex';
-    const codexSession = await this.raw.createSession(options.championId, options.workspacePath, model);
+    const codexSession = await this.raw.createSession(options.championId, options.workspacePath, options.model);
     return {
       internalId: codexSession.threadId,
       mode: 'native',
@@ -38,9 +37,12 @@ export class CodexBackend implements Backend {
   }
 
   async send(session: StoredSession, message: string): Promise<Partial<StoredSession>> {
+    // 'gpt-5.3-codex' was the hardcoded default before models became optional;
+    // it was never user-chosen and is now rejected by the API, so drop it.
+    const model = session.model === 'gpt-5.3-codex' ? undefined : session.model;
     const sendResult = await this.raw.sendMessage(session.championId, session.internalId, message, {
       workspacePath: session.path,
-      model: session.model
+      model
     });
     const existingMessages = session.lastAssistantMessages ?? [];
     const completedEarly = typeof sendResult.assistantText === 'string';
@@ -250,6 +252,18 @@ export class CodexBackend implements Backend {
       session.internalId,
       session.appServerPort
     );
+  }
+
+  async setGoal(session: StoredSession, update: GoalUpdate): Promise<ThreadGoal> {
+    return this.raw.setThreadGoal(session.internalId, update);
+  }
+
+  async getGoal(session: StoredSession): Promise<ThreadGoal | undefined> {
+    return this.raw.getThreadGoal(session.internalId);
+  }
+
+  async clearGoal(session: StoredSession): Promise<boolean> {
+    return this.raw.clearThreadGoal(session.internalId);
   }
 
   async afterKill(remainingActiveSessions: StoredSession[]): Promise<void> {
