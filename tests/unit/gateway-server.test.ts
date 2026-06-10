@@ -447,6 +447,33 @@ describe('gateway server', () => {
     expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--clear', '--json']);
   });
 
+  it('drops the redundant active status when an objective is set (CLI rejects the flag combo)', async () => {
+    const goal = { threadId: 'thr_1', objective: 'ship it', status: 'active' };
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
+      createCommandResult(args, `${JSON.stringify(goal)}\n`)
+    );
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    // This is exactly what the 0.3.x CLI sends through the gateway client:
+    // setting an objective also sets status 'active'.
+    const response = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', objective: 'ship it', status: 'active', tokenBudget: 1000 })
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).goal).toEqual(goal);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', 'ship it', '--budget', '1000', '--json']);
+
+    const pausedWithObjective = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', objective: 'ship it', status: 'paused' })
+    });
+    expect(pausedWithObjective.status).toBe(400);
+  });
+
   it('rejects invalid goal payloads', async () => {
     const executeCommand = vi.fn<GatewayCommandExecutor>();
     const server = await startGatewayTestServer(executeCommand);

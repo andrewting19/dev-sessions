@@ -92,6 +92,11 @@
 - [x] Live goal E2E: set → autonomous turn → complete; pause/resume/clear; second objective reactivates
 - [x] `/tmp/codex` re-pinned to `rust-v0.139.0`
 
+### Phase 8: In-container goal verification ✅
+- [x] **Gateway `/goal` flag reconstruction fixed** — the CLI sends `status: 'active'` with every objective (objective implies active); the gateway re-encoded that as `--resume`, which the host CLI rejects alongside an objective. The route now drops the redundant `active` and 400s on `paused`+objective
+- [x] **Goal ops work on fresh threads** — goal set/get/clear and `wait --next-turn` did `thread/resume` first, which fails with "no rollout found" on a thread that hasn't run its first turn yet (rollout file doesn't exist until then, even though the thread is live in the daemon). Resume is now tolerant of exactly that error
+- [x] Full in-container E2E (real ubuntu-dev container → gateway → host): create codex session, goal set → autonomous completion → `wait --goal`, `ask` with multi-paragraph reply preserved, pause/resume/clear, `wait --next-turn` timeout semantics, kill
+
 ### Phase 7: Orchestration polish ✅
 - [x] `wait <id> --next-turn` — single-shot turn-boundary wait (returns on the next `turn/completed`, including server-initiated goal continuation turns; plain `wait` loops to quiescence and rides through goal turns because continuations fire synchronously on thread-idle)
 - [x] `last-message --json` + gateway uses it — fixes the gateway block-splitting corruption (messages with paragraph breaks were split on blank lines)

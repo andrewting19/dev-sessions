@@ -1614,7 +1614,7 @@ export class CodexAppServerBackend {
 
     const { result } = await this.withConnectedClient(async (client) => {
       // Resume subscribes this connection to the thread's notifications.
-      await client.request('thread/resume', { threadId: normalizedThreadId });
+      await this.resumeThreadTolerant(client, normalizedThreadId);
       return client.waitForTurnCompletion(safeTimeoutMs, normalizedThreadId);
     });
 
@@ -1627,7 +1627,7 @@ export class CodexAppServerBackend {
     const { result } = await this.withConnectedClient(async (client) => {
       // Resume first so the thread is loaded in the daemon — goal continuation
       // turns are driven by the app-server and need a live thread.
-      await client.request('thread/resume', { threadId: normalizedThreadId });
+      await this.resumeThreadTolerant(client, normalizedThreadId);
       const response = await client.request('thread/goal/set', {
         threadId: normalizedThreadId,
         ...(update.objective !== undefined ? { objective: update.objective } : {}),
@@ -1648,7 +1648,7 @@ export class CodexAppServerBackend {
     const normalizedThreadId = this.requireThreadId(threadId, 'read a goal');
 
     const { result } = await this.withConnectedClient(async (client) => {
-      await client.request('thread/resume', { threadId: normalizedThreadId });
+      await this.resumeThreadTolerant(client, normalizedThreadId);
       const response = await client.request('thread/goal/get', { threadId: normalizedThreadId });
       return extractGoalFromResponse(response);
     });
@@ -1660,13 +1660,26 @@ export class CodexAppServerBackend {
     const normalizedThreadId = this.requireThreadId(threadId, 'clear a goal');
 
     const { result } = await this.withConnectedClient(async (client) => {
-      await client.request('thread/resume', { threadId: normalizedThreadId });
+      await this.resumeThreadTolerant(client, normalizedThreadId);
       const response = await client.request('thread/goal/clear', { threadId: normalizedThreadId });
       const cleared = (response as { cleared?: unknown } | undefined)?.cleared;
       return cleared === true;
     });
 
     return result;
+  }
+
+  // A freshly started thread has no rollout file until its first turn, so
+  // thread/resume fails with "no rollout found" even though the thread is loaded
+  // and fully usable in the daemon. Tolerate exactly that error.
+  private async resumeThreadTolerant(client: CodexRpcClient, threadId: string): Promise<void> {
+    try {
+      await client.request('thread/resume', { threadId });
+    } catch (error: unknown) {
+      if (!this.isResumeNotFoundError(error)) {
+        throw error;
+      }
+    }
   }
 
   private requireThreadId(threadId: string, action: string): string {

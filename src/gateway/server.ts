@@ -636,7 +636,17 @@ export function createGatewayApp(
             jsonError(res, 400, 'status must be one of: active, paused');
             return;
           }
-          args.push(req.body.status === 'paused' ? '--pause' : '--resume');
+          if (req.body.objective !== undefined) {
+            // The host CLI rejects --pause/--resume alongside an objective, and an
+            // objective already implies status active — so drop a redundant
+            // 'active' and reject an inexpressible 'paused'.
+            if (req.body.status === 'paused') {
+              jsonError(res, 400, 'status paused cannot be combined with an objective');
+              return;
+            }
+          } else {
+            args.push(req.body.status === 'paused' ? '--pause' : '--resume');
+          }
         }
         if (req.body.tokenBudget !== undefined) {
           if (typeof req.body.tokenBudget !== 'number' || !Number.isInteger(req.body.tokenBudget) || req.body.tokenBudget <= 0) {

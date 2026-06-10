@@ -1368,6 +1368,25 @@ describe('CodexAppServerBackend', () => {
       expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'thread/goal/clear']);
     });
 
+    it('sets a goal on a fresh thread whose rollout does not exist yet', async () => {
+      const { backend } = createHarness([
+        {
+          onRequest: (method) => {
+            if (method === 'thread/resume') {
+              throw new Error('thread/resume failed: no rollout found for thread id thr_fresh');
+            }
+            if (method === 'thread/goal/set') {
+              return { goal: { ...sampleGoal, threadId: 'thr_fresh' } };
+            }
+            throw new Error(`Unexpected method: ${method}`);
+          }
+        }
+      ]);
+
+      const goal = await backend.setThreadGoal('thr_fresh', { objective: 'ship the feature' });
+      expect(goal.threadId).toBe('thr_fresh');
+    });
+
     it('rejects goal operations without a thread id', async () => {
       const { backend } = createHarness([]);
       await expect(backend.setThreadGoal('  ', { objective: 'x' })).rejects.toThrow(/thread ID is required/i);
