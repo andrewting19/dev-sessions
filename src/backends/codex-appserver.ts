@@ -1605,6 +1605,22 @@ export class CodexAppServerBackend {
     return 'idle';
   }
 
+  // Single-shot turn-boundary wait: resolves on the first turn/completed observed
+  // for the thread after this call, without looping to thread quiescence. Unlike
+  // waitForThread, this returns between goal continuation turns.
+  async waitForNextThreadTurn(threadId: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CodexTurnWaitResult> {
+    const normalizedThreadId = this.requireThreadId(threadId, 'wait for the next turn');
+    const safeTimeoutMs = Math.max(1, timeoutMs);
+
+    const { result } = await this.withConnectedClient(async (client) => {
+      // Resume subscribes this connection to the thread's notifications.
+      await client.request('thread/resume', { threadId: normalizedThreadId });
+      return client.waitForTurnCompletion(safeTimeoutMs, normalizedThreadId);
+    });
+
+    return result;
+  }
+
   async setThreadGoal(threadId: string, update: GoalUpdate): Promise<ThreadGoal> {
     const normalizedThreadId = this.requireThreadId(threadId, 'set a goal');
 

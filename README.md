@@ -161,12 +161,12 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 | `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `--model <m>` codex model override, `-q` quiet) |
 | `ask <id> <msg>` | One-shot round trip: send, wait for the reply, print it (`--file`, `--timeout`) |
 | `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents) |
-| `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state instead |
+| `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state; `--next-turn` returns at the next turn boundary (codex only, includes goal continuation turns) |
 | `goal <id> [objective]` | Codex only: set/show an autonomous goal (`--budget` tokens, `--pause`, `--resume`, `--clear`, `--json`) |
-| `last-message <id>` | Get last N assistant messages (`-n` count) |
+| `last-message <id>` | Get last N assistant messages (`-n` count, `--json` for a lossless block array) |
 | `status <id>` | Get session status: `idle`, `working`, or `waiting_for_input` |
 | `list` | List all active sessions (`--json` for machine-readable output) |
-| `kill <id>` | Terminate a session and clean up |
+| `kill <id>` | Terminate a session and clean up (`--all` for every session, `--older-than 7d|72h|30m` for stale ones) |
 | `gateway` | Start the Docker relay gateway HTTP server (`--port`) |
 | `gateway install` | Install gateway as system daemon (launchd on macOS, systemd on Linux) |
 | `gateway uninstall` | Remove gateway daemon |

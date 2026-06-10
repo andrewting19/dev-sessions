@@ -183,6 +183,19 @@ export class SessionManager {
     return { goal, timedOut: false, elapsedMs: Date.now() - startTime };
   }
 
+  async waitForSessionNextTurn(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
+    const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    if (!backend.waitNextTurn) {
+      throw new Error(
+        `--next-turn waits are only supported for codex sessions; ${championId} is a ${session.cli} session`
+      );
+    }
+
+    const timeoutMs = Math.max(1, (options.timeoutSeconds ?? 300) * 1000);
+    return backend.waitNextTurn(session, timeoutMs);
+  }
+
   private async requireGoalBackend(championId: string): Promise<{ session: StoredSession; backend: Backend }> {
     const session = await this.requireSession(championId);
     const backend = this.getBackend(session.cli);

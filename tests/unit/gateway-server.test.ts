@@ -323,9 +323,10 @@ describe('gateway server', () => {
     expect(body.waitResult.timedOut).toBe(false);
   }, { timeout: WAIT_KEEPALIVE_INTERVAL_MS + 5000 });
 
-  it('parses last-message output into blocks', async () => {
+  it('relays last-message blocks losslessly via --json (paragraph breaks preserved)', async () => {
+    const blocks = ['single message with\n\na paragraph break inside', 'second message'];
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
-      createCommandResult(args, 'first block\n\nsecond block\n')
+      createCommandResult(args, `${JSON.stringify(blocks)}\n`)
     );
     const server = await startGatewayTestServer(executeCommand);
     closers.push(server.close);
@@ -334,8 +335,33 @@ describe('gateway server', () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body.blocks).toEqual(['first block', 'second block']);
-    expect(executeCommand).toHaveBeenCalledWith(['last-message', 'fizz-top', '-n', '2']);
+    expect(body.blocks).toEqual(blocks);
+    expect(executeCommand).toHaveBeenCalledWith(['last-message', 'fizz-top', '-n', '2', '--json']);
+  });
+
+  it('relays wait --next-turn through the wait route', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
+      createCommandResult(args, 'completed\n')
+    );
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/wait?id=fizz-top&timeout=60&nextTurn=1`);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.waitResult.completed).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith(['wait', 'fizz-top', '--timeout', '60', '--next-turn']);
+  });
+
+  it('rejects wait requests combining goal and nextTurn', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>();
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/wait?id=fizz-top&goal=1&nextTurn=1`);
+    expect(response.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
   });
 
   it('returns command failure payloads when session IDs do not exist', async () => {

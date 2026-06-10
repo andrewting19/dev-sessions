@@ -428,12 +428,20 @@ export function createGatewayApp(
       }
 
       const waitForGoal = req.query.goal === '1' || req.query.goal === 'true';
+      const waitForNextTurn = req.query.nextTurn === '1' || req.query.nextTurn === 'true';
+      if (waitForGoal && waitForNextTurn) {
+        jsonError(res, 400, 'Use only one of goal, nextTurn');
+        return;
+      }
       const args = ['wait', sessionId, '--timeout', String(timeoutSeconds)];
       if (intervalSeconds !== undefined) {
         args.push('--interval', String(intervalSeconds));
       }
       if (waitForGoal) {
         args.push('--goal');
+      }
+      if (waitForNextTurn) {
+        args.push('--next-turn');
       }
 
       const fetchFinalGoal = async (): Promise<unknown> => {
@@ -521,11 +529,10 @@ export function createGatewayApp(
     try {
       const sessionId = ensureNonEmptyString(req.query.id, 'id');
       const count = parsePositiveIntegerQuery(req.query.n, 1, 'n');
-      const result = await executeCommand(['last-message', sessionId, '-n', String(count)]);
-      const trimmed = result.stdout.trim();
-      const blocks = trimmed.length > 0
-        ? trimmed.split(/\n{2,}/).map((block) => block.trim()).filter((block) => block.length > 0)
-        : [];
+      // --json preserves block boundaries exactly; splitting plain output on
+      // blank lines corrupts messages that contain paragraph breaks.
+      const result = await executeCommand(['last-message', sessionId, '-n', String(count), '--json']);
+      const blocks = JSON.parse(result.stdout) as string[];
 
       res.json({
         ok: true,

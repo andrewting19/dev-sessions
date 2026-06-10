@@ -92,6 +92,11 @@
 - [x] Live goal E2E: set → autonomous turn → complete; pause/resume/clear; second objective reactivates
 - [x] `/tmp/codex` re-pinned to `rust-v0.139.0`
 
+### Phase 7: Orchestration polish ✅
+- [x] `wait <id> --next-turn` — single-shot turn-boundary wait (returns on the next `turn/completed`, including server-initiated goal continuation turns; plain `wait` loops to quiescence and rides through goal turns because continuations fire synchronously on thread-idle)
+- [x] `last-message --json` + gateway uses it — fixes the gateway block-splitting corruption (messages with paragraph breaks were split on blank lines)
+- [x] `kill --all` and `kill --older-than <30m|72h|7d>` — bulk cleanup of stale sessions, works through the gateway (CLI-level list+kill)
+
 ---
 
 ## Known Issues (open)
@@ -100,7 +105,7 @@
 - [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-native modes.
 - [ ] **Claude permission prompts undetectable** — TUI elements, not in JSONL transcript. `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
 - [x] **Codex `last-message` returns empty** — fixed: `waitForTurnCompletion` now includes `assistantText` in result; `wait` persists it to `lastAssistantMessages` in the store.
-- [ ] **Gateway `last-message` block splitting** — `cli.ts` joins blocks with blank lines; `gateway/server.ts` splits on blank lines — assistant messages with paragraph breaks get corrupted. Fix: use structured JSON over the gateway.
+- [x] **Gateway `last-message` block splitting** — fixed: `last-message --json` prints a lossless JSON block array and the gateway route uses it.
 
 ---
 

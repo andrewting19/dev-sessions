@@ -35,13 +35,13 @@ dev-sessions kill "$sid"
 create   [-p path] [-d desc] [--cli claude|codex] [-m native|docker] [--model m] [-q]
 ask      <id> [message] [-f file] [-t seconds]   → send + wait + print reply
 send     <id> [message] [-f file]
-wait     <id> [-t seconds] [-i interval_seconds] [--goal]
-last-message <id> [-n count]
+wait     <id> [-t seconds] [-i interval_seconds] [--goal | --next-turn]
+last-message <id> [-n count] [--json]
 status   <id>          → idle | working | waiting_for_input
 goal     <id> [objective] [--budget tokens] [--pause|--resume|--clear] [--json]
 list     [--json]
 logs     <id>
-kill     <id>
+kill     <id> | --all | --older-than <30m|72h|7d>
 ```
 
 ## Goals (codex only) — autonomous multi-turn objectives
@@ -59,6 +59,11 @@ dev-sessions goal "$sid" "Make all tests in tests/unit pass, then mark the goal 
 # Block until the goal settles; prints terminal status:
 # complete | paused | blocked | usageLimited | budgetLimited
 dev-sessions wait "$sid" --goal --timeout 1800
+
+# Or supervise turn-by-turn: returns at the next turn boundary (goal
+# continuations are server-initiated, so plain `wait` would ride through them)
+dev-sessions wait "$sid" --next-turn --timeout 600
+dev-sessions last-message "$sid"      # inspect progress, then loop or intervene
 
 # Inspect anytime (--json for structured: objective, status, tokensUsed, tokenBudget…)
 dev-sessions goal "$sid" --json

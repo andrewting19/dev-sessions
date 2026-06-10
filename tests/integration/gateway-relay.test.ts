@@ -142,6 +142,9 @@ describe('gateway relay integration', () => {
       }
 
       if (args[0] === 'last-message') {
+        if (args.includes('--json')) {
+          return createCommandResult(args, `${JSON.stringify(['latest message from host'])}\n`);
+        }
         return createCommandResult(args, 'latest message from host\n');
       }
 
@@ -260,7 +263,7 @@ describe('gateway relay integration', () => {
         ['send', 'fizz-top', 'message from file'],
         ['status', 'fizz-top'],
         ['wait', 'fizz-top', '--timeout', '4', '--interval', '2'],
-        ['last-message', 'fizz-top', '-n', '1'],
+        ['last-message', 'fizz-top', '-n', '1', '--json'],
         ['kill', 'fizz-top']
       ])
     );

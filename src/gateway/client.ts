@@ -275,6 +275,18 @@ export class GatewaySessionManager {
     };
   }
 
+  async waitForSessionNextTurn(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
+    const timeoutSeconds = Math.max(1, options.timeoutSeconds ?? 300);
+    const query = new URLSearchParams({
+      id: championId,
+      timeout: String(timeoutSeconds),
+      nextTurn: '1'
+    });
+
+    const response = await this.request<WaitGatewayResponse>(`/wait?${query.toString()}`);
+    return response.waitResult;
+  }
+
   async waitForSession(championId: string, options: WaitOptions = {}): Promise<WaitResult> {
     const timeoutSeconds = Math.max(1, options.timeoutSeconds ?? 300);
     const query = new URLSearchParams({

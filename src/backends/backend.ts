@@ -49,4 +49,7 @@ export interface Backend {
   setGoal?(session: StoredSession, update: GoalUpdate): Promise<ThreadGoal>;
   getGoal?(session: StoredSession): Promise<ThreadGoal | undefined>;
   clearGoal?(session: StoredSession): Promise<boolean>;
+  // Single-shot turn-boundary wait (codex only): resolves on the next completed
+  // turn, including server-initiated goal continuation turns.
+  waitNextTurn?(session: StoredSession, timeoutMs: number): Promise<WaitResult>;
 }

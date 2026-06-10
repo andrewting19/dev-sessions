@@ -1220,6 +1220,37 @@ describe('CodexAppServerBackend', () => {
     expect(result.errorMessage).toBe('model not supported on this account');
   });
 
+  it('waitForNextThreadTurn resumes the thread and waits for a single turn completion', async () => {
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'thread/resume') {
+            return {};
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        },
+        waitResult: {
+          completed: true,
+          timedOut: false,
+          elapsedMs: 1500,
+          status: 'completed',
+          assistantText: 'turn output'
+        }
+      }
+    ]);
+
+    const result = await backend.waitForNextThreadTurn('thr_goal', 30_000);
+    expect(result.status).toBe('completed');
+    expect(result.assistantText).toBe('turn output');
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+    expect(clients[0].waitCalls).toEqual([{ timeoutMs: 30_000, expectedThreadId: 'thr_goal' }]);
+  });
+
+  it('waitForNextThreadTurn rejects empty thread ids', async () => {
+    const { backend } = createHarness([]);
+    await expect(backend.waitForNextThreadTurn(' ', 1_000)).rejects.toThrow(/thread ID is required/i);
+  });
+
   describe('thread goals', () => {
     const sampleGoal = {
       threadId: 'thr_goal',

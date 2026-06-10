@@ -41,7 +41,8 @@ function createManagerMock(): SessionManagerLike {
       goal: createMockGoal('complete'),
       timedOut: false,
       elapsedMs: 1000
-    })
+    }),
+    waitForSessionNextTurn: vi.fn().mockResolvedValue({ completed: true, timedOut: false, elapsedMs: 500 })
   };
 }
 
@@ -409,6 +410,99 @@ describe('CLI argument parsing', () => {
     await expect(
       program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--goal'])
     ).rejects.toMatchObject({ exitCode: 124 });
+  });
+
+  it('parses wait --next-turn and rejects combining it with --goal', async () => {
+    const manager = createManagerMock();
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--next-turn', '--timeout', '60']);
+    expect(manager.waitForSessionNextTurn).toHaveBeenCalledWith('fizz-top', { timeoutSeconds: 60 });
+    expect(manager.waitForSession).not.toHaveBeenCalled();
+    expect(output.stdout).toBe('completed\n');
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--next-turn', '--goal'])
+    ).rejects.toThrow('Use only one of --goal, --next-turn');
+  });
+
+  it('wait --next-turn exits 124 on timeout', async () => {
+    const manager = createManagerMock();
+    (manager.waitForSessionNextTurn as ReturnType<typeof vi.fn>).mockResolvedValue({
+      completed: false,
+      timedOut: true,
+      elapsedMs: 60_000
+    });
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'wait', 'fizz-top', '--next-turn'])
+    ).rejects.toMatchObject({ exitCode: 124 });
+  });
+
+  it('outputs last-message blocks as JSON with --json', async () => {
+    const manager = createManagerMock();
+    (manager.getLastAssistantTextBlocks as ReturnType<typeof vi.fn>).mockResolvedValue([
+      'one message with\n\na paragraph break',
+      'second'
+    ]);
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'last-message', 'fizz-top', '-n', '2', '--json']);
+    expect(JSON.parse(output.stdout)).toEqual(['one message with\n\na paragraph break', 'second']);
+  });
+
+  it('kills all sessions with kill --all', async () => {
+    const manager = createManagerMock();
+    (manager.listSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      createMockSession('fizz-top'),
+      createMockSession('riven-jg')
+    ]);
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'kill', '--all']);
+
+    expect(manager.killSession).toHaveBeenCalledWith('fizz-top');
+    expect(manager.killSession).toHaveBeenCalledWith('riven-jg');
+    expect(output.stdout).toContain('Killed 2 sessions');
+  });
+
+  it('kills only stale sessions with kill --older-than', async () => {
+    const manager = createManagerMock();
+    const fresh = createMockSession('fizz-top');
+    fresh.lastUsed = new Date().toISOString();
+    const stale = createMockSession('riven-jg');
+    stale.lastUsed = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    (manager.listSessions as ReturnType<typeof vi.fn>).mockResolvedValue([fresh, stale]);
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'kill', '--older-than', '7d']);
+
+    expect(manager.killSession).toHaveBeenCalledTimes(1);
+    expect(manager.killSession).toHaveBeenCalledWith('riven-jg');
+    expect(output.stdout).toContain('Killed 1 session');
+  });
+
+  it('rejects kill with no selector, multiple selectors, or bad durations', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await expect(program.parseAsync(['node', 'dev-sessions', 'kill'])).rejects.toThrow(
+      'Provide exactly one of <id>, --all, or --older-than'
+    );
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'kill', 'fizz-top', '--all'])
+    ).rejects.toThrow('Provide exactly one of <id>, --all, or --older-than');
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'kill', '--older-than', 'tomorrow'])
+    ).rejects.toThrow('--older-than must be a duration like 30m, 72h, or 7d');
+    expect(manager.killSession).not.toHaveBeenCalled();
   });
 
   it('rejects non-integer numeric flags', async () => {

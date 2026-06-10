@@ -254,6 +254,19 @@ export class CodexBackend implements Backend {
     );
   }
 
+  async waitNextTurn(session: StoredSession, timeoutMs: number): Promise<{ completed: boolean; timedOut: boolean; elapsedMs: number }> {
+    const result = await this.raw.waitForNextThreadTurn(session.internalId, timeoutMs);
+    if (result.status === 'failed') {
+      const message = result.errorMessage ? `Codex turn failed: ${result.errorMessage}` : 'Codex turn failed';
+      throw new Error(message);
+    }
+    return {
+      completed: !result.timedOut,
+      timedOut: result.timedOut,
+      elapsedMs: result.elapsedMs
+    };
+  }
+
   async setGoal(session: StoredSession, update: GoalUpdate): Promise<ThreadGoal> {
     return this.raw.setThreadGoal(session.internalId, update);
   }

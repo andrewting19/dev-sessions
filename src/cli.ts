@@ -54,6 +54,7 @@ export interface SessionManagerLike {
   getSessionGoal(championId: string): Promise<ThreadGoal | undefined>;
   clearSessionGoal(championId: string): Promise<boolean>;
   waitForSessionGoal(championId: string, options: WaitOptions): Promise<GoalWaitResult>;
+  waitForSessionNextTurn(championId: string, options: WaitOptions): Promise<WaitResult>;
 }
 
 class CliError extends Error {
@@ -83,6 +84,21 @@ function parsePositiveNumber(raw: string, flagName: string): number {
   }
 
   return value;
+}
+
+function parseDurationMs(raw: string, flagName: string): number {
+  const match = /^(\d+)([mhd])$/.exec(raw.trim());
+  if (!match) {
+    throw new CliError(`${flagName} must be a duration like 30m, 72h, or 7d`);
+  }
+
+  const value = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new CliError(`${flagName} must be a positive duration`);
+  }
+
+  const unitMs = match[2] === 'm' ? 60_000 : match[2] === 'h' ? 3_600_000 : 86_400_000;
+  return value * unitMs;
 }
 
 function getDefaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -341,11 +357,45 @@ export function buildProgram(
     });
 
   program
-    .command('kill <id>')
-    .description('Kill a session and remove it from the store')
-    .action(async (id: string) => {
-      await manager.killSession(id);
-      io.stdout.write(`Killed session ${id}\n`);
+    .command('kill [id]')
+    .description('Kill a session and remove it from the store (or bulk-clean with --all / --older-than)')
+    .option('--all', 'Kill every active session')
+    .option('--older-than <duration>', 'Kill sessions whose last activity is older than e.g. 30m, 72h, 7d')
+    .action(async (id: string | undefined, options: { all?: boolean; olderThan?: string }) => {
+      const selectors = [id !== undefined, options.all === true, options.olderThan !== undefined].filter(Boolean).length;
+      if (selectors !== 1) {
+        throw new CliError('Provide exactly one of <id>, --all, or --older-than <duration>');
+      }
+
+      if (id !== undefined) {
+        await manager.killSession(id);
+        io.stdout.write(`Killed session ${id}\n`);
+        return;
+      }
+
+      const cutoffMs = options.olderThan !== undefined
+        ? Date.now() - parseDurationMs(options.olderThan, '--older-than')
+        : undefined;
+
+      const sessions = await manager.listSessions();
+      const targets = sessions.filter((session) => {
+        if (cutoffMs === undefined) {
+          return true;
+        }
+        const lastUsed = Date.parse(session.lastUsed);
+        return Number.isFinite(lastUsed) && lastUsed < cutoffMs;
+      });
+
+      if (targets.length === 0) {
+        io.stdout.write('No matching sessions to kill\n');
+        return;
+      }
+
+      for (const session of targets) {
+        await manager.killSession(session.championId);
+        io.stdout.write(`Killed session ${session.championId}\n`);
+      }
+      io.stdout.write(`Killed ${targets.length} session${targets.length === 1 ? '' : 's'}\n`);
     });
 
   program
@@ -371,9 +421,15 @@ export function buildProgram(
     .command('last-message <id>')
     .description('Get the last assistant message blocks from transcript')
     .option('-n, --count <count>', 'Number of assistant text blocks', '1')
-    .action(async (id: string, options: { count: string }) => {
+    .option('--json', 'Output blocks as a JSON array (lossless — text mode joins blocks with blank lines)')
+    .action(async (id: string, options: { count: string; json?: boolean }) => {
       const count = parsePositiveInteger(options.count, '--count');
       const blocks = await manager.getLastAssistantTextBlocks(id, count);
+
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(blocks)}\n`);
+        return;
+      }
 
       if (blocks.length === 0) {
         return;
@@ -399,9 +455,26 @@ export function buildProgram(
       '--goal',
       'Wait until the session goal reaches a terminal state (complete, paused, blocked, usageLimited, budgetLimited); prints the final status'
     )
-    .action(async (id: string, options: { timeout: string; interval: string; goal?: boolean }) => {
+    .option(
+      '--next-turn',
+      'Return as soon as the next turn completes (codex only) — includes server-initiated goal continuation turns'
+    )
+    .action(async (id: string, options: { timeout: string; interval: string; goal?: boolean; nextTurn?: boolean }) => {
       const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
       const intervalSeconds = parsePositiveNumber(options.interval, '--interval');
+
+      if (options.goal && options.nextTurn) {
+        throw new CliError('Use only one of --goal, --next-turn');
+      }
+
+      if (options.nextTurn) {
+        const nextTurnResult = await manager.waitForSessionNextTurn(id, { timeoutSeconds });
+        if (nextTurnResult.timedOut) {
+          throw new CliError(`Timed out waiting for the next turn on ${id}`, 124);
+        }
+        io.stdout.write('completed\n');
+        return;
+      }
 
       if (options.goal) {
         const goalResult = await manager.waitForSessionGoal(id, {
