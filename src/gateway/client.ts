@@ -10,6 +10,7 @@ interface CreateSessionOptions {
   cli?: SessionCli;
   mode?: SessionMode;
   model?: string;
+  host?: string;
 }
 
 interface WaitOptions {
@@ -109,10 +110,20 @@ export class GatewaySessionManager {
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
     const payload: Record<string, unknown> = {
-      path: translateContainerPath(path.resolve(options.path ?? process.cwd())),
       cli: options.cli ?? 'claude',
       mode: options.mode ?? 'native'
     };
+
+    if (options.host !== undefined) {
+      // Remote-host paths are interpreted on that host — no container translation,
+      // and no default: an unset path resolves on the remote.
+      payload.host = options.host;
+      if (options.path !== undefined) {
+        payload.path = options.path;
+      }
+    } else {
+      payload.path = translateContainerPath(path.resolve(options.path ?? process.cwd()));
+    }
 
     if (typeof options.description === 'string' && options.description.trim().length > 0) {
       payload.description = options.description;
@@ -139,7 +150,8 @@ export class GatewaySessionManager {
       internalId: response.sessionId,
       cli: (payload.cli as SessionCli) ?? 'claude',
       mode: (payload.mode as SessionMode) ?? 'native',
-      path: String(payload.path),
+      path: typeof payload.path === 'string' ? payload.path : '',
+      host: options.host,
       description: options.description,
       status: 'active',
       createdAt: timestamp,

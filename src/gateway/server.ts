@@ -48,6 +48,7 @@ interface CreateBody {
   cli?: unknown;
   mode?: unknown;
   description?: unknown;
+  host?: unknown;
 }
 
 interface SendBody {
@@ -269,8 +270,25 @@ export function createGatewayApp(
 
   app.post('/create', async (req: Request<{}, unknown, CreateBody>, res: Response) => {
     try {
-      const workspacePath = ensureNonEmptyString(req.body.path, 'path');
-      const args = ['create', '--quiet', '--path', workspacePath];
+      let host: string | undefined;
+      if (req.body.host !== undefined) {
+        if (typeof req.body.host !== 'string' || req.body.host.trim().length === 0) {
+          jsonError(res, 400, 'host must be a non-empty string');
+          return;
+        }
+        host = req.body.host.trim();
+      }
+
+      const args = ['create', '--quiet'];
+      if (host !== undefined) {
+        args.push('--host', host);
+        // path is optional for remote creates (defaults on the remote host)
+        if (typeof req.body.path === 'string' && req.body.path.trim().length > 0) {
+          args.push('--path', req.body.path);
+        }
+      } else {
+        args.push('--path', ensureNonEmptyString(req.body.path, 'path'));
+      }
 
       if (req.body.cli !== undefined) {
         if (typeof req.body.cli !== 'string' || !ALLOWED_CLIS.includes(req.body.cli as SessionCli)) {

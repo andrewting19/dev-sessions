@@ -102,6 +102,21 @@
 - [x] `last-message --json` + gateway uses it — fixes the gateway block-splitting corruption (messages with paragraph breaks were split on blank lines)
 - [x] `kill --all` and `kill --older-than <30m|72h|7d>` — bulk cleanup of stale sessions, works through the gateway (CLI-level list+kill)
 
+### Phase 9: Remote host support (SSH) ✅
+- [x] `create --host <ssh-target>` — session spawns on the remote; all other commands route automatically via the local registry (`host` + `remoteBin` stored per session)
+- [x] Transport: `ssh <host> bash -lc '<remoteBin> <cmd> --json'` with ControlMaster multiplexing (60s persist), `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, `ConnectTimeout=10`, ServerAlive keepalives — `src/remote/ssh-runner.ts`
+- [x] `RemoteHostClient` (per-command builders/parsers) + `RoutingSessionManager` (implements `SessionManagerLike`, routes by `session.host`) — same seam as the gateway client
+- [x] Champion IDs pre-allocated locally and passed via `create --id`, so IDs stay unique across hosts; retries if the ID is taken remotely
+- [x] Version handshake at `create --host` — warns (stderr) when remote major.minor differs, continues
+- [x] `send`/`ask --file` content streams over ssh **stdin** (`send <id> --file -`), never argv — no scp temp files, arbitrary quoting/size safe
+- [x] `list` shows HOST column, merges live remote state, prunes stubs whose remote session died, keeps cached stubs (with warning) when a host is unreachable
+- [x] Exit codes preserved through the relay (wait timeout 124 verified live); SSH transport failure exits **255** (distinct from session failure)
+- [x] Durability: session + goal driver run detached on the remote; verified live that killing the ControlMaster mid-turn doesn't touch the session and `wait` reattaches
+- [x] Gateway `/create` accepts `host` so Docker-sandboxed agents can target remote hosts (host-side routing does the rest)
+- [x] New machine-readable surface for the relay: `create --json`, `create --id`, `logs --json`; `--version` no longer double-prints
+- [x] Verified E2E against a real Ubuntu host over real ssh: create/list/send/status/wait/last-message/logs/inspect/ask/kill, hostile-quoting round trip, out-of-band kill pruning, version-mismatch warning, unreachable-host exit 255
+- [ ] Remote codex goal flow not live-tested (relay mechanics covered by unit tests; local goal E2E exists from Phase 6)
+
 ---
 
 ## Known Issues (open)

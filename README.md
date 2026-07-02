@@ -158,14 +158,14 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 
 | Command | Description |
 |---------|-------------|
-| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `--model <m>` codex model override, `-q` quiet) |
+| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `--model <m>` codex model override, `--host <ssh-target>` remote host, `--json` full record, `-q` quiet) |
 | `ask <id> <msg>` | One-shot round trip: send, wait for the reply, print it (`--file`, `--timeout`) |
-| `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents) |
+| `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents, `--file -` for stdin) |
 | `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state; `--next-turn` returns at the next turn boundary (codex only, includes goal continuation turns) |
 | `goal <id> [objective]` | Codex only: set/show an autonomous goal (`--budget` tokens, `--pause`, `--resume`, `--clear`, `--json`) |
 | `last-message <id>` | Get last N assistant messages (`-n` count, `--json` for a lossless block array) |
 | `status <id>` | Get session status: `idle`, `working`, or `waiting_for_input` |
-| `list` | List all active sessions (`--json` for machine-readable output) |
+| `list` | List all active sessions with their host (`--json` for machine-readable output) |
 | `kill <id>` | Terminate a session and clean up (`--all` for every session, `--older-than 7d|72h|30m` for stale ones) |
 | `gateway` | Start the Docker relay gateway HTTP server (`--port`) |
 | `gateway install` | Install gateway as system daemon (launchd on macOS, systemd on Linux) |
@@ -190,6 +190,48 @@ create  →  send  →  [wait / poll status]  →  last-message  →  kill
 ```
 
 `send` is non-blocking — it returns immediately after the message is delivered. Use `wait` to block until the turn completes.
+
+---
+
+## Remote Hosts (SSH)
+
+Sessions can live on other machines. Create with `--host` and every other
+command routes there automatically — the calling convention doesn't change:
+
+```bash
+# buildbox is an ~/.ssh/config alias (any ssh target works, e.g. user@10.0.0.5)
+sid=$(dev-sessions create -q --host buildbox --path /home/andrew/repo --cli codex)
+
+dev-sessions send $sid --file BRIEFING.md    # file content streams over ssh stdin
+dev-sessions goal $sid "Make the tests pass, then mark the goal complete."
+dev-sessions wait $sid --goal --timeout 1800
+dev-sessions last-message $sid
+dev-sessions kill $sid
+```
+
+**How it works:** the local CLI relays each command as
+`ssh <host> dev-sessions <cmd> --json` and passes results through. The local
+registry (`~/.dev-sessions/sessions.json`) records which host each session ID
+lives on and pre-allocates IDs, so they stay unique across hosts. `list` shows
+a HOST column, merges live remote state, and prunes sessions that died remotely.
+
+**Requirements:** dev-sessions installed on the remote (same minor version — the
+CLI warns on mismatch at create time), key-based ssh auth (`BatchMode=yes`; no
+prompts, no secrets in argv — auth is entirely ssh config's business). Remote
+commands run via `bash -lc` so login-shell PATH additions (npm globals, nvm)
+apply; if the binary still isn't found, set `DEV_SESSIONS_REMOTE_BIN` to its
+absolute path before `create --host` (it's remembered per session).
+
+**Durability:** the session and any `/goal` driver run entirely on the remote
+(tmux / app-server daemon, detached). A dropped connection or closed laptop
+doesn't touch them — `wait` is a pure polling reattach, safe to re-run.
+
+**Exit codes:** preserved exactly (`wait` exits 124 on timeout). Exit **255**
+means the SSH transport failed — distinct from "the session failed" — so
+orchestrators can retry network errors specifically. Connections are multiplexed
+(`ControlMaster` with 60s persistence) to keep per-command latency low; first
+contact with an unknown host is accepted automatically (`accept-new`), changed
+host keys still fail hard.
 
 ---
 

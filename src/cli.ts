@@ -38,6 +38,16 @@ export interface InstallSkillDependencies {
 
 export interface BuildProgramDependencies {
   installSkill?: Partial<InstallSkillDependencies>;
+  // Reads message content from stdin (send/ask --file -). Injectable for tests.
+  readStdin?: () => Promise<string>;
+}
+
+async function readStdinToEnd(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 export interface SessionManagerLike {
@@ -110,11 +120,12 @@ function getDefaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 function formatSessionsTable(sessions: StoredSession[]): string {
-  const headers = ['ID', 'CLI', 'MODE', 'STATUS', 'PATH', 'DESCRIPTION', 'LAST USED'];
+  const headers = ['ID', 'CLI', 'MODE', 'HOST', 'STATUS', 'PATH', 'DESCRIPTION', 'LAST USED'];
   const rows = sessions.map((session) => [
     session.championId,
     session.cli,
     session.mode,
+    session.host ?? 'local',
     session.status,
     session.path,
     session.description ?? '',
@@ -257,7 +268,7 @@ export function buildProgram(
   program
     .command('create')
     .description('Create a new agent session')
-    .option('-p, --path <path>', 'Workspace path to run the agent in', getDefaultWorkspacePath())
+    .option('-p, --path <path>', 'Workspace path to run the agent in (default: current directory)')
     .option('-d, --description <description>', 'Optional description for the session')
     .addOption(
       new Option('--cli <cli>', 'Agent CLI backend')
@@ -270,49 +281,80 @@ export function buildProgram(
         .default('native')
     )
     .option('--model <model>', 'Model override (codex only; defaults to the codex-configured model)')
+    .option(
+      '--host <ssh-target>',
+      'Create the session on a remote host over SSH (anything ssh accepts, e.g. an alias from ~/.ssh/config); ' +
+      '--path is interpreted on the remote, and all other commands route to it automatically'
+    )
+    .addOption(new Option('--id <champion-id>', 'Use a pre-allocated session ID (used by the remote relay)').hideHelp())
+    .option('--json', 'Print the full session record as JSON')
     .option('-q, --quiet', 'Only print session ID (for scripts)')
     .action(async (options: {
-      path: string;
+      path?: string;
       description?: string;
       cli: 'claude' | 'codex';
       mode: 'native' | 'docker';
       model?: string;
+      host?: string;
+      id?: string;
+      json?: boolean;
       quiet?: boolean;
     }) => {
+      // For remote sessions an unset --path must stay unset so it resolves on
+      // the remote (its home directory), not to this machine's cwd.
+      const workspacePath = options.path ?? (options.host !== undefined ? undefined : getDefaultWorkspacePath());
+
       const session = await manager.createSession({
-        path: options.path,
+        path: workspacePath,
         cli: options.cli,
         description: options.description,
         mode: options.mode,
-        model: options.model
+        model: options.model,
+        host: options.host,
+        championId: options.id
       });
+
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(session, null, 2)}\n`);
+        return;
+      }
 
       if (options.quiet) {
         io.stdout.write(`${session.championId}\n`);
         return;
       }
 
-      io.stdout.write(`Created session ${session.championId}\n`);
+      const where = session.host ? ` on ${session.host}` : '';
+      io.stdout.write(`Created session ${session.championId}${where}\n`);
     });
+
+  const readStdin = dependencies.readStdin ?? readStdinToEnd;
+
+  const resolveMessagePayload = async (message: string | undefined, file: string | undefined): Promise<string> => {
+    if (file && message) {
+      throw new CliError('Provide either <message> or --file, not both');
+    }
+
+    let payload = message;
+    if (file === '-') {
+      payload = await readStdin();
+    } else if (file) {
+      payload = await readFile(path.resolve(file), 'utf8');
+    }
+
+    if (!payload || payload.trim().length === 0) {
+      throw new CliError('Message is required. Use <message> or --file <path>.');
+    }
+
+    return payload;
+  };
 
   program
     .command('send <id> [message]')
     .description('Send a message to a session')
-    .option('-f, --file <filePath>', 'Read message content from a file')
+    .option('-f, --file <filePath>', 'Read message content from a file (use - for stdin)')
     .action(async (id: string, message: string | undefined, options: { file?: string }) => {
-      if (options.file && message) {
-        throw new CliError('Provide either <message> or --file, not both');
-      }
-
-      let payload = message;
-      if (options.file) {
-        payload = await readFile(path.resolve(options.file), 'utf8');
-      }
-
-      if (!payload || payload.trim().length === 0) {
-        throw new CliError('Message is required. Use <message> or --file <path>.');
-      }
-
+      const payload = await resolveMessagePayload(message, options.file);
       await manager.sendMessage(id, payload);
       io.stdout.write(`Sent message to ${id}\n`);
     });
@@ -320,22 +362,10 @@ export function buildProgram(
   program
     .command('ask <id> [message]')
     .description('Send a message, wait for the reply, and print it (send + wait + last-message in one step)')
-    .option('-f, --file <filePath>', 'Read message content from a file')
+    .option('-f, --file <filePath>', 'Read message content from a file (use - for stdin)')
     .option('-t, --timeout <seconds>', 'Timeout in seconds', '300')
     .action(async (id: string, message: string | undefined, options: { file?: string; timeout: string }) => {
-      if (options.file && message) {
-        throw new CliError('Provide either <message> or --file, not both');
-      }
-
-      let payload = message;
-      if (options.file) {
-        payload = await readFile(path.resolve(options.file), 'utf8');
-      }
-
-      if (!payload || payload.trim().length === 0) {
-        throw new CliError('Message is required. Use <message> or --file <path>.');
-      }
-
+      const payload = await resolveMessagePayload(message, options.file);
       const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
 
       await manager.sendMessage(id, payload);
@@ -583,8 +613,14 @@ export function buildProgram(
   program
     .command('logs <id>')
     .description('Show full conversation history for a session (human and assistant turns in order)')
-    .action(async (id: string) => {
+    .option('--json', 'Output turns as a JSON array (lossless)')
+    .action(async (id: string, options: { json?: boolean }) => {
       const turns = await manager.getSessionLogs(id);
+
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(turns)}\n`);
+        return;
+      }
 
       if (turns.length === 0) {
         io.stdout.write('No conversation history available\n');
@@ -709,7 +745,9 @@ export async function runCli(
     return 0;
   } catch (error: unknown) {
     if (error instanceof CommanderError) {
-      if (error.code === 'commander.helpDisplayed') {
+      // Both already wrote their output to stdout; re-printing the error
+      // message would duplicate it on stderr.
+      if (error.code === 'commander.helpDisplayed' || error.code === 'commander.version') {
         return 0;
       }
 

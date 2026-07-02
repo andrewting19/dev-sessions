@@ -29,6 +29,8 @@ function isStoredSession(value: unknown): value is StoredSession {
     (candidate.cli === 'claude' || candidate.cli === 'codex') &&
     (candidate.mode === 'native' || candidate.mode === 'docker') &&
     typeof candidate.path === 'string' &&
+    (candidate.host === undefined || typeof candidate.host === 'string') &&
+    (candidate.remoteBin === undefined || typeof candidate.remoteBin === 'string') &&
     (candidate.description === undefined || typeof candidate.description === 'string') &&
     (candidate.status === 'active' || candidate.status === 'inactive') &&
     (candidate.appServerPid === undefined || Number.isInteger(candidate.appServerPid)) &&

@@ -14,6 +14,11 @@ export interface StoredSession {
   cli: SessionCli;
   mode: SessionMode;
   path: string;
+  // SSH target the session lives on. Absent for local sessions. Commands
+  // referencing this session are relayed via `ssh <host> <remoteBin> ...`.
+  host?: string;
+  // dev-sessions binary/command to invoke on the remote host (default: dev-sessions).
+  remoteBin?: string;
   description?: string;
   status: SessionStatus;
   appServerPid?: number;

@@ -32,17 +32,26 @@ dev-sessions kill "$sid"
 ## Commands
 
 ```
-create   [-p path] [-d desc] [--cli claude|codex] [-m native|docker] [--model m] [-q]
+create   [-p path] [-d desc] [--cli claude|codex] [-m native|docker] [--model m] [--host ssh-target] [-q]
 ask      <id> [message] [-f file] [-t seconds]   → send + wait + print reply
-send     <id> [message] [-f file]
+send     <id> [message] [-f file]                (use `-f -` to read from stdin)
 wait     <id> [-t seconds] [-i interval_seconds] [--goal | --next-turn]
 last-message <id> [-n count] [--json]
 status   <id>          → idle | working | waiting_for_input
 goal     <id> [objective] [--budget tokens] [--pause|--resume|--clear] [--json]
 list     [--json]
-logs     <id>
+logs     <id> [--json]
 kill     <id> | --all | --older-than <30m|72h|7d>
 ```
+
+## Remote hosts
+
+`create --host <ssh-target>` spawns the session on a remote machine that has
+dev-sessions installed (`<ssh-target>` is anything ssh accepts; `--path` is a
+remote path). Every other command takes the same session ID and routes over SSH
+automatically — nothing else changes. The session survives dropped connections;
+`wait` is a safe reattach. Exit codes are preserved (124 = wait timeout); exit
+255 means the SSH transport failed, not the session.
 
 ## Goals (codex only) — autonomous multi-turn objectives
 

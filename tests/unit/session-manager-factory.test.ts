@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { GatewaySessionManager } from '../../src/gateway/client';
+import { RoutingSessionManager } from '../../src/remote/routing-manager';
 import {
   createDefaultSessionManager,
-  SessionManager,
   shouldUseGatewaySessionManager
 } from '../../src/session-manager';
 
@@ -19,7 +19,7 @@ describe('session manager factory', () => {
     expect(manager).toBeInstanceOf(GatewaySessionManager);
   });
 
-  it('uses local mode when DEV_SESSIONS_SANDBOX is not set', () => {
+  it('uses the host-routing manager when DEV_SESSIONS_SANDBOX is not set', () => {
     const env = {
       ...process.env
     };
@@ -27,6 +27,6 @@ describe('session manager factory', () => {
 
     expect(shouldUseGatewaySessionManager(env)).toBe(false);
     const manager = createDefaultSessionManager(env);
-    expect(manager).toBeInstanceOf(SessionManager);
+    expect(manager).toBeInstanceOf(RoutingSessionManager);
   });
 });

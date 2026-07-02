@@ -7,7 +7,9 @@ import { ClaudeTmuxBackend } from './backends/claude-tmux';
 import { CodexBackend } from './backends/codex-backend';
 import { CodexAppServerBackend } from './backends/codex-appserver';
 import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
+import { RoutingSessionManager } from './remote/routing-manager';
 import { SessionStore, createDefaultSessionStore } from './session-store';
+import pkg from '../package.json';
 import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from './types';
 
 export interface CreateSessionOptions {
@@ -16,6 +18,11 @@ export interface CreateSessionOptions {
   cli?: SessionCli;
   mode?: SessionMode;
   model?: string;
+  // SSH target to create the session on (handled by RoutingSessionManager).
+  host?: string;
+  // Pre-allocated champion ID. Used by the remote relay so the orchestrator's
+  // registry can guarantee IDs are unique across hosts.
+  championId?: string;
 }
 
 export interface WaitOptions {
@@ -61,11 +68,17 @@ export class SessionManager {
   }
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
+    if (options.host !== undefined) {
+      throw new Error('create --host requires the routing session manager; this manager only creates local sessions');
+    }
+
     const workspacePath = path.resolve(options.path ?? process.cwd());
     await this.assertWorkspacePathExists(workspacePath);
     const cli = options.cli ?? 'claude';
     const backend = this.getBackend(cli);
-    const championId = await this.findAvailableChampionId();
+    const championId = options.championId !== undefined
+      ? await this.claimRequestedChampionId(options.championId)
+      : await this.findAvailableChampionId();
     const timestamp = new Date().toISOString();
 
     const result = await backend.create({
@@ -219,7 +232,11 @@ export class SessionManager {
   }
 
   async listSessions(): Promise<StoredSession[]> {
-    const sessions = (await this.store.listSessions()).filter((session) => session.status === 'active');
+    // Remote sessions (host set) are stubs owned by the routing manager —
+    // liveness-checking them against local tmux/app-server would prune them.
+    const sessions = (await this.store.listSessions()).filter(
+      (session) => session.status === 'active' && session.host === undefined
+    );
     const livenessChecks = await Promise.all(
       sessions.map(async (session) => {
         const backend = this.getBackend(session.cli);
@@ -258,7 +275,9 @@ export class SessionManager {
       await this.store.pruneSessions(deadPruneIds);
     }
 
-    return (await this.store.listSessions()).filter((session) => session.status === 'active');
+    return (await this.store.listSessions()).filter(
+      (session) => session.status === 'active' && session.host === undefined
+    );
   }
 
   async getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]> {
@@ -324,6 +343,20 @@ export class SessionManager {
     return session;
   }
 
+  private async claimRequestedChampionId(championId: string): Promise<string> {
+    if (await this.store.getSession(championId)) {
+      throw new Error(`Champion ID already in use: ${championId}`);
+    }
+
+    for (const backend of this.backends.values()) {
+      if (await backend.isChampionIdTaken(championId)) {
+        throw new Error(`Champion ID already in use: ${championId}`);
+      }
+    }
+
+    return championId;
+  }
+
   private async findAvailableChampionId(maxAttempts: number = 250): Promise<string> {
     const allBackends = [...this.backends.values()];
 
@@ -373,16 +406,19 @@ export function shouldUseGatewaySessionManager(env: NodeJS.ProcessEnv = process.
 
 export function createDefaultSessionManager(
   env: NodeJS.ProcessEnv = process.env
-): SessionManager | GatewaySessionManager {
+): RoutingSessionManager | GatewaySessionManager {
   if (shouldUseGatewaySessionManager(env)) {
     return new GatewaySessionManager({
       baseUrl: resolveGatewayBaseUrl(env)
     });
   }
 
-  return new SessionManager(
-    createDefaultSessionStore(),
+  const store = createDefaultSessionStore();
+  const local = new SessionManager(
+    store,
     new ClaudeBackend(new ClaudeTmuxBackend()),
     new CodexBackend(new CodexAppServerBackend())
   );
+
+  return new RoutingSessionManager(local, store, { localVersion: pkg.version, env });
 }

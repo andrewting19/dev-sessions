@@ -839,3 +839,71 @@ describe('SessionManager', () => {
     await expect(manager.killSession('missing-id')).rejects.toThrow('Session not found: missing-id');
   });
 });
+
+describe('SessionManager remote-aware behavior', () => {
+  let tmpDir = '';
+  let store: SessionStore;
+  let backend: FakeClaudeBackend;
+  let codexBackend: FakeCodexBackend;
+  let manager: SessionManager;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), 'dev-sessions-remote-aware-'));
+    store = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    backend = new FakeClaudeBackend();
+    codexBackend = new FakeCodexBackend();
+    manager = new SessionManager(store, new ClaudeBackend(backend), new CodexBackend(codexBackend));
+    await mkdir('/tmp/project', { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('uses a pre-allocated champion ID when provided', async () => {
+    const session = await manager.createSession({
+      path: '/tmp/project',
+      mode: 'native',
+      championId: 'fizz-top'
+    });
+
+    expect(session.championId).toBe('fizz-top');
+  });
+
+  it('rejects a pre-allocated champion ID that is already in the store', async () => {
+    await manager.createSession({ path: '/tmp/project', mode: 'native', championId: 'fizz-top' });
+
+    await expect(
+      manager.createSession({ path: '/tmp/project', mode: 'native', championId: 'fizz-top' })
+    ).rejects.toThrow('Champion ID already in use: fizz-top');
+  });
+
+  it('refuses to create when host is set — routing manager territory', async () => {
+    await expect(
+      manager.createSession({ path: '/tmp/project', host: 'buildbox' })
+    ).rejects.toThrow(/routing session manager/);
+  });
+
+  it('excludes remote session stubs from listSessions and never liveness-prunes them', async () => {
+    await manager.createSession({ path: '/tmp/project', mode: 'native', championId: 'local-one' });
+
+    const now = new Date().toISOString();
+    await store.upsertSession({
+      championId: 'remote-one',
+      internalId: 'remote-uuid',
+      cli: 'claude',
+      mode: 'native',
+      path: '/home/remote/project',
+      host: 'buildbox',
+      status: 'active',
+      createdAt: now,
+      lastUsed: now
+    });
+
+    const sessions = await manager.listSessions();
+    expect(sessions.map((s) => s.championId)).toEqual(['local-one']);
+
+    // The stub must still exist — a dead-looking local tmux check must not prune it.
+    expect(await store.getSession('remote-one')).toBeDefined();
+  });
+});
