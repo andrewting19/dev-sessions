@@ -115,7 +115,7 @@
 - [x] Gateway `/create` accepts `host` so Docker-sandboxed agents can target remote hosts (host-side routing does the rest)
 - [x] New machine-readable surface for the relay: `create --json`, `create --id`, `logs --json`; `--version` no longer double-prints
 - [x] Verified E2E against a real Ubuntu host over real ssh: create/list/send/status/wait/last-message/logs/inspect/ask/kill, hostile-quoting round trip, out-of-band kill pruning, version-mismatch warning, unreachable-host exit 255
-- [ ] Remote codex goal flow not live-tested (relay mechanics covered by unit tests; local goal E2E exists from Phase 6)
+- [x] Remote codex goal flow live-tested against an authed remote (real codex 0.142.3 over ssh): create → ask round trip → goal set → autonomous completion server-side → `wait --goal` → artifact verified on the remote → kill (daemon stopped, no processes left). Also exercised `DEV_SESSIONS_REMOTE_BIN` for real — the remote's login PATH had a stale codex 0.128 (pre-goals) ahead of a goals-capable one; a PATH-prefixing remoteBin routed around it without touching the machine's config
 
 ---
 
