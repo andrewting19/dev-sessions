@@ -907,3 +907,24 @@ describe('SessionManager remote-aware behavior', () => {
     expect(await store.getSession('remote-one')).toBeDefined();
   });
 });
+
+describe('SessionManager create rollback', () => {
+  it('kills the backend session when the store write fails, then rethrows', async () => {
+    const backend = new FakeClaudeBackend();
+    const codexBackend = new FakeCodexBackend();
+    const failingStore = {
+      getSession: async () => undefined,
+      upsertSession: async () => {
+        throw new Error('disk full');
+      }
+    } as unknown as SessionStore;
+
+    const manager = new SessionManager(failingStore, new ClaudeBackend(backend), new CodexBackend(codexBackend));
+    await mkdir('/tmp/project', { recursive: true });
+
+    await expect(manager.createSession({ path: '/tmp/project', mode: 'native' })).rejects.toThrow('disk full');
+
+    expect(backend.createCalls).toHaveLength(1);
+    expect(backend.killCalls).toEqual([backend.createCalls[0].tmuxSessionName]);
+  });
+});

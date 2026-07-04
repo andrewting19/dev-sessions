@@ -144,15 +144,11 @@
 #### ~~Session store locking (#2/#3)~~ ✅
 File-based locking added to `SessionStore` via atomic `mkdir` lock primitive. All read-modify-write operations (`upsertSession`, `updateSession`, `deleteSession`, `pruneSessions`) are serialized through `withLock()`. Stale lock recovery (30s timeout) prevents deadlocks from crashed processes. Concurrency tests added covering parallel upserts, deletes, updates, mixed operations, and cross-instance access.
 
-#### Orphaned resources on store failure (#8)
-**Why:** External resources (tmux session, Codex thread) are created before store persistence. If `upsertSession()` fails, the session/thread is created but untracked — orphaned forever.
-**What:** On store write failure, do best-effort rollback (kill tmux session or archive Codex thread) before returning error.
-**Files:** `src/session-manager.ts` (create path), `src/backends/claude-tmux.ts`, `src/backends/codex-appserver.ts`
+#### ~~Orphaned resources on store failure (#8)~~ ✅
+`createSession` now rolls back (kills) the just-created tmux session / codex thread when the store write fails, then rethrows. Unit-tested with a failing store.
 
-#### Codex daemon concurrent startup (#9)
-**Why:** Two concurrent `create` calls can both decide the daemon isn't running and both try to spawn it, resulting in two daemons. Also, if startup checks fail after spawn, the child process is orphaned.
-**What:** Add a startup lockfile before spawning. Use unique temp state files. Kill the spawned child on startup failure before throwing.
-**Files:** `src/backends/codex-appserver.ts` (daemon startup path)
+#### ~~Codex daemon concurrent startup (#9)~~ ✅
+Daemon startup is serialized by a `mkdir`-based lock (`codex-appserver.json.startup.lock`) with stale-lock recovery; after acquiring, `ensureServer` re-checks the state file so the loser adopts the winner's daemon. A spawned child that fails startup checks is SIGTERMed before the error propagates. Unit-tested (concurrent managers spawn exactly one daemon; failed startup kills the child and releases the lock; stale lock recovered) and verified live: two concurrent `create --cli codex` processes produced two sessions sharing one app-server pid/port, and the daemon stopped when the last session was killed.
 
 #### Codex status truthfulness via app-server notification monitor (new)
 **Why:** On codex-cli `0.104.0`, `thread/resume` and even `thread/read` can report an idle/completed thread while the agent is still executing tools in the same turn. We now mitigate `wait` and `status` by persisting `codexActiveTurnId`, but `status` remains conservative and can stay `working` after out-of-band completion until `wait` or another completion path clears the latch.
@@ -195,7 +191,7 @@ File-based locking added to `SessionStore` via atomic `mkdir` lock primitive. Al
 - [x] `inspect` command — dump raw stored session record as JSON
 - [ ] Better error messages throughout (session not found, tmux not installed, codex not installed)
 - [x] Reject nonexistent workspace paths up front instead of creating broken sessions
-- [ ] Version strings — source from `package.json` in one place (currently duplicated in cli.ts and codex clientInfo)
+- [x] Version strings — sourced from `package.json` everywhere (codex clientInfo was hardcoded `0.1.0`)
 
 ### Future
 

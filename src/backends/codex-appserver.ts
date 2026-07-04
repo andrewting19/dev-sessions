@@ -1,9 +1,10 @@
 import { ChildProcess, spawn } from 'node:child_process';
-import { mkdir, open as openFile, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open as openFile, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import pkg from '../../package.json';
 import { AgentTurnStatus, GoalUpdate, ThreadGoal, ThreadGoalStatus } from '../types';
 
 type TurnCompletionStatus = 'completed' | 'failed' | 'interrupted';
@@ -180,11 +181,12 @@ async function waitForPortOpen(port: number, timeoutMs: number): Promise<void> {
   throw new Error(`Timed out waiting for Codex app-server to listen on port ${port}`);
 }
 
-class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonManager {
+export class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonManager {
   constructor(
     private readonly stateFilePath: string = getDaemonStateFilePath(),
     private readonly logFilePath: string = getDaemonLogFilePath(),
-    private readonly spawnDaemonProcess: SpawnCodexDaemonProcess = defaultSpawnCodexDaemon
+    private readonly spawnDaemonProcess: SpawnCodexDaemonProcess = defaultSpawnCodexDaemon,
+    private readonly startupTimeoutMs: number = STARTUP_TIMEOUT_MS
   ) {}
 
   async ensureServer(): Promise<CodexAppServerInfo> {
@@ -193,7 +195,65 @@ class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonManager 
       return existing;
     }
 
-    return this.startServer();
+    // Serialize daemon startup across processes: without this, two concurrent
+    // `create` calls both see no state file and both spawn a daemon — one of
+    // them ends up orphaned when the other wins the state-file write.
+    await this.acquireStartupLock();
+    try {
+      const startedElsewhere = await this.getServer();
+      if (startedElsewhere) {
+        return startedElsewhere;
+      }
+
+      return await this.startServer();
+    } finally {
+      await this.releaseStartupLock();
+    }
+  }
+
+  private get startupLockPath(): string {
+    return `${this.stateFilePath}.startup.lock`;
+  }
+
+  private async acquireStartupLock(): Promise<void> {
+    await mkdir(path.dirname(this.stateFilePath), { recursive: true });
+
+    // A legitimate holder keeps the lock for up to two startup timeouts
+    // (log-scan wait + port-open wait), so both bounds sit above that.
+    const waitDeadline = Date.now() + this.startupTimeoutMs * 2 + 5_000;
+    const staleMs = this.startupTimeoutMs * 2 + 15_000;
+
+    while (true) {
+      try {
+        await mkdir(this.startupLockPath);
+        return;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+      }
+
+      try {
+        const lockStat = await stat(this.startupLockPath);
+        if (Date.now() - lockStat.mtimeMs > staleMs) {
+          await rm(this.startupLockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // Lock vanished between check and stat — retry acquire.
+        continue;
+      }
+
+      if (Date.now() >= waitDeadline) {
+        throw new Error(`Timed out waiting for Codex app-server startup lock at ${this.startupLockPath}`);
+      }
+
+      await sleep(PORT_POLL_INTERVAL_MS);
+    }
+  }
+
+  private async releaseStartupLock(): Promise<void> {
+    await rm(this.startupLockPath, { recursive: true, force: true });
   }
 
   async getServer(): Promise<CodexAppServerInfo | undefined> {
@@ -263,21 +323,34 @@ class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonManager 
 
     child.unref();
 
-    const port = await this.waitForListeningPort(child.pid);
-    await waitForPortOpen(port, STARTUP_TIMEOUT_MS);
+    try {
+      const port = await this.waitForListeningPort(child.pid);
+      await waitForPortOpen(port, this.startupTimeoutMs);
 
-    const info: CodexAppServerInfo = {
-      pid: child.pid,
-      port,
-      url: `ws://127.0.0.1:${port}`
-    };
+      const info: CodexAppServerInfo = {
+        pid: child.pid,
+        port,
+        url: `ws://127.0.0.1:${port}`
+      };
 
-    await this.writeState(info);
-    return info;
+      await this.writeState(info);
+      return info;
+    } catch (error: unknown) {
+      // The daemon was spawned but never became usable (or its state was never
+      // persisted). Kill it so a failed startup doesn't leave an orphan.
+      try {
+        process.kill(child.pid, 'SIGTERM');
+      } catch (killError: unknown) {
+        if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') {
+          console.warn(`[dev-sessions] failed to clean up Codex app-server pid ${child.pid} after startup failure`);
+        }
+      }
+      throw error;
+    }
   }
 
   private async waitForListeningPort(pid: number): Promise<number> {
-    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+    const deadline = Date.now() + this.startupTimeoutMs;
 
     while (Date.now() <= deadline) {
       const logContents = await this.readLog();
@@ -400,7 +473,7 @@ export class CodexWebSocketRpcClient implements CodexRpcClient {
       clientInfo: {
         name: 'dev-sessions',
         title: 'dev-sessions',
-        version: '0.1.0'
+        version: pkg.version
       },
       capabilities: {
         experimentalApi: true

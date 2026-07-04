@@ -106,7 +106,22 @@ export class SessionManager {
       lastUsed: timestamp
     };
 
-    await this.store.upsertSession(session);
+    try {
+      await this.store.upsertSession(session);
+    } catch (error: unknown) {
+      // The tmux session / codex thread already exists; if it isn't recorded it
+      // can never be addressed or killed. Roll it back rather than orphan it.
+      try {
+        await backend.kill(session);
+      } catch {
+        console.warn(
+          `[dev-sessions] failed to roll back ${cli} session ${championId} after a store write failure; ` +
+          'it may need manual cleanup'
+        );
+      }
+      throw error;
+    }
+
     return session;
   }
 
