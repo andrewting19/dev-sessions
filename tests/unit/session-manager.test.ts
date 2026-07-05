@@ -11,6 +11,7 @@ import {
   CodexTurnWaitResult
 } from '../../src/backends/codex-appserver';
 import { toTmuxSessionName } from '../../src/champion-ids';
+import { sanitizeWorkspacePath } from '../../src/transcript/claude-parser';
 import { SessionManager } from '../../src/session-manager';
 import { SessionStore } from '../../src/session-store';
 import { AgentTurnStatus, SessionMode, ThreadGoal } from '../../src/types';
@@ -306,7 +307,7 @@ describe('SessionManager', () => {
       mode: 'native'
     });
 
-    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project');
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', sanitizeWorkspacePath('/tmp/project'));
     const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
     await mkdir(transcriptDir, { recursive: true });
     await writeFile(
@@ -352,7 +353,7 @@ describe('SessionManager', () => {
       mode: 'native'
     });
 
-    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-stale');
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', sanitizeWorkspacePath('/tmp/project-stale'));
     const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
     await mkdir(transcriptDir, { recursive: true });
     // Previous turn fully completed with system + file-history-snapshot already in transcript.
@@ -741,7 +742,7 @@ describe('SessionManager', () => {
       mode: 'native'
     });
 
-    const transcriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-project-timeout');
+    const transcriptDir = path.join(homeDir, '.claude', 'projects', sanitizeWorkspacePath('/tmp/project-timeout'));
     const transcriptPath = path.join(transcriptDir, `${session.internalId}.jsonl`);
     await mkdir(transcriptDir, { recursive: true });
     await writeFile(
@@ -770,7 +771,7 @@ describe('SessionManager', () => {
       path: '/tmp/codex-mixed'
     });
 
-    const claudeTranscriptDir = path.join(homeDir, '.claude', 'projects', '-tmp-claude-mixed');
+    const claudeTranscriptDir = path.join(homeDir, '.claude', 'projects', sanitizeWorkspacePath('/tmp/claude-mixed'));
     const claudeTranscriptPath = path.join(claudeTranscriptDir, `${claudeSession.internalId}.jsonl`);
     await mkdir(claudeTranscriptDir, { recursive: true });
     await writeFile(
