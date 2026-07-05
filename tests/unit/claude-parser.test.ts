@@ -98,3 +98,27 @@ describe('claude transcript parser', () => {
     expect(countAssistantMessages(entries)).toBe(2);
   });
 });
+
+describe('sanitizeWorkspacePath symlink resolution', () => {
+  it('resolves symlinked workspaces to their physical path, matching Claude', async () => {
+    const { mkdtemp, symlink, rm, realpath } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+
+    const realDir = await mkdtemp(path.join(os.tmpdir(), 'ds-parser-real-'));
+    const linkPath = path.join(os.tmpdir(), `ds-parser-link-${Date.now()}`);
+    await symlink(realDir, linkPath);
+
+    try {
+      const physical = await realpath(realDir);
+      expect(sanitizeWorkspacePath(linkPath)).toBe(physical.replace(/[^a-zA-Z0-9]/g, '-'));
+    } finally {
+      await rm(linkPath, { force: true });
+      await rm(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the resolved path when the workspace does not exist', () => {
+    expect(sanitizeWorkspacePath('/definitely/not/a/real/dir')).toBe('-definitely-not-a-real-dir');
+  });
+});

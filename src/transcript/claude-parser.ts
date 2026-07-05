@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,8 +21,18 @@ const WAITING_TOOL_NAMES = new Set([
 ]);
 
 export function sanitizeWorkspacePath(workspacePath: string): string {
+  // Claude derives the project directory name from the *physical* cwd, so
+  // symlinked workspaces (e.g. /tmp -> /private/tmp on macOS) must be resolved
+  // the same way or the transcript is looked up in the wrong directory.
+  let resolved: string;
+  try {
+    resolved = realpathSync(path.resolve(workspacePath));
+  } catch {
+    resolved = path.resolve(workspacePath);
+  }
+
   // Claude normalizes project directory names by replacing non-alphanumeric characters with "-".
-  return path.resolve(workspacePath).replace(/[^a-zA-Z0-9]/g, '-');
+  return resolved.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 export function getClaudeTranscriptPath(
