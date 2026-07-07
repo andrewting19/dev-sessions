@@ -86,6 +86,7 @@ dev-sessions last-message $sid                   # "You said hello"
 
 # Autonomous goal (codex only) — the agent keeps working across turns until done
 dev-sessions goal $sid "Make all unit tests pass, then mark the goal complete." --budget 200000
+dev-sessions goal $sid -f objective.md           # long/multiline objectives from a file (- for stdin)
 dev-sessions wait $sid --goal --timeout 1800     # blocks until complete/paused/blocked/limited
 dev-sessions goal $sid --json                    # inspect objective, status, token usage
 

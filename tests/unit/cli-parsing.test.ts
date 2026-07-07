@@ -350,6 +350,35 @@ describe('CLI argument parsing', () => {
     });
   });
 
+  it('parses goal --file and reads a multiline objective from disk', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const objectiveFile = path.join(tmpDir, 'objective.md');
+    const objective = '- fix the parser\n- add regression tests\n- update TODO.md';
+    await writeFile(objectiveFile, `${objective}\n`, 'utf8');
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--file', objectiveFile, '--budget', '50000']);
+
+    expect(manager.setSessionGoal).toHaveBeenCalledWith('fizz-top', {
+      objective,
+      status: 'active',
+      tokenBudget: 50_000
+    });
+  });
+
+  it('rejects goal --file combined with an inline objective', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const objectiveFile = path.join(tmpDir, 'objective2.md');
+    await writeFile(objectiveFile, 'from file', 'utf8');
+    const program = buildProgram(manager, io);
+
+    await expect(
+      program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', 'inline objective', '--file', objectiveFile])
+    ).rejects.toThrow('Provide either an objective or --file, not both');
+  });
+
   it('parses a dash-leading message passed as one argument after --', async () => {
     const manager = createManagerMock();
     const { io } = createIoCapture();

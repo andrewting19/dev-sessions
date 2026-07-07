@@ -539,6 +539,7 @@ export function buildProgram(
       'across turns until complete. Without arguments, shows the current goal.'
     )
     .option('--budget <tokens>', 'Token budget for the goal')
+    .option('-f, --file <filePath>', 'Read the objective from a file (use - for stdin)')
     .option('--pause', 'Pause the active goal')
     .option('--resume', 'Resume a paused or blocked goal')
     .option('--clear', 'Clear the goal')
@@ -546,9 +547,19 @@ export function buildProgram(
     .action(async (
       id: string,
       objectiveWords: string[],
-      options: { budget?: string; pause?: boolean; resume?: boolean; clear?: boolean; json?: boolean }
+      options: { budget?: string; file?: string; pause?: boolean; resume?: boolean; clear?: boolean; json?: boolean }
     ) => {
-      const objective = objectiveWords.join(' ').trim();
+      let objective = objectiveWords.join(' ').trim();
+      if (options.file !== undefined) {
+        if (objective.length > 0) {
+          throw new CliError('Provide either an objective or --file, not both');
+        }
+        const content = options.file === '-' ? await readStdin() : await readFile(path.resolve(options.file), 'utf8');
+        objective = content.trim();
+        if (objective.length === 0) {
+          throw new CliError('Objective file is empty. Provide a non-empty objective.');
+        }
+      }
       const actionFlags = [options.pause, options.resume, options.clear].filter(Boolean).length;
       if (actionFlags > 1) {
         throw new CliError('Use only one of --pause, --resume, --clear');

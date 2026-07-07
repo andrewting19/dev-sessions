@@ -117,6 +117,10 @@
 - [x] Verified E2E against a real Ubuntu host over real ssh: create/list/send/status/wait/last-message/logs/inspect/ask/kill, hostile-quoting round trip, out-of-band kill pruning, version-mismatch warning, unreachable-host exit 255
 - [x] Remote codex goal flow live-tested against an authed remote (real codex 0.142.3 over ssh): create → ask round trip → goal set → autonomous completion server-side → `wait --goal` → artifact verified on the remote → kill (daemon stopped, no processes left). Also exercised `DEV_SESSIONS_REMOTE_BIN` for real — the remote's login PATH had a stale codex 0.128 (pre-goals) ahead of a goals-capable one; a PATH-prefixing remoteBin routed around it without touching the machine's config
 
+### Phase 10: Multiline/dash-safe goal & send through the gateway ✅
+- [x] **Gateway argv mangling fixed** — the gateway relayed `goal` objectives and `send` messages as bare positional argv; any content starting with `-` (e.g. a markdown bullet list) hit commander's option parser on the host and failed with `unknown option`. This was the "multiline prompts through goal fail at the host proxy" bug — size was never the issue (argv handles multi-KB fine); the trigger was a leading dash. Routes now pass free text after a `--` terminator.
+- [x] **`goal -f/--file <path>`** — read the objective from a file (`-` for stdin), same as `send`/`ask`; preferred for long/multiline objectives so they never travel through argv
+
 ---
 
 ## Known Issues (open)

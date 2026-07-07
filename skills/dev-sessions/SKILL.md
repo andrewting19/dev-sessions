@@ -38,7 +38,7 @@ send     <id> [message] [-f file]                (use `-f -` to read from stdin)
 wait     <id> [-t seconds] [-i interval_seconds] [--goal | --next-turn]
 last-message <id> [-n count] [--json]
 status   <id>          → idle | working | waiting_for_input
-goal     <id> [objective] [--budget tokens] [--pause|--resume|--clear] [--json]
+goal     <id> [objective] [-f file] [--budget tokens] [--pause|--resume|--clear] [--json]
 list     [--json]
 logs     <id> [--json]
 kill     <id> | --all | --older-than <30m|72h|7d>
@@ -64,6 +64,9 @@ sid=$(dev-sessions create -q --cli codex --path /repo)
 
 # Set the objective — the agent starts pursuing it immediately
 dev-sessions goal "$sid" "Make all tests in tests/unit pass, then mark the goal complete." --budget 200000
+
+# Long or multiline objectives: write them to a file (use `-f -` for stdin)
+dev-sessions goal "$sid" -f objective.md --budget 200000
 
 # Block until the goal settles; prints terminal status:
 # complete | paused | blocked | usageLimited | budgetLimited
