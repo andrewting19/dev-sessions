@@ -182,9 +182,6 @@ export class RemoteHostClient {
 
   async setGoal(championId: string, update: GoalUpdate): Promise<ThreadGoal> {
     const args = ['goal', championId];
-    if (update.objective !== undefined) {
-      args.push(update.objective);
-    }
     if (update.status === 'paused') {
       args.push('--pause');
     } else if (update.status === 'active' && update.objective === undefined) {
@@ -194,6 +191,12 @@ export class RemoteHostClient {
       args.push('--budget', String(update.tokenBudget));
     }
     args.push('--json');
+    if (update.objective !== undefined) {
+      // Options first, then '--', then the objective: stops option parsing so
+      // objectives that start with '-' (e.g. markdown bullets) aren't misread
+      // as CLI flags by the remote CLI.
+      args.push('--', update.objective);
+    }
 
     const result = await this.exec(args);
     this.assertOk(result, 'goal set');

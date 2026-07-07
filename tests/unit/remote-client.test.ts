@@ -156,14 +156,20 @@ describe('RemoteHostClient', () => {
       createdAt: 1,
       updatedAt: 1
     };
-    const { runner, runs } = createFakeRunner([ok(JSON.stringify(goal)), ok(JSON.stringify(goal))]);
+    const { runner, runs } = createFakeRunner([ok(JSON.stringify(goal)), ok(JSON.stringify(goal)), ok(JSON.stringify(goal))]);
     const client = new RemoteHostClient('buildbox', 'dev-sessions', runner);
 
     await client.setGoal('fizz-top', { objective: 'make tests pass', status: 'active', tokenBudget: 200000 });
-    expect(runs[0].args).toEqual(['goal', 'fizz-top', 'make tests pass', '--budget', '200000', '--json']);
+    expect(runs[0].args).toEqual(['goal', 'fizz-top', '--budget', '200000', '--json', '--', 'make tests pass']);
 
     await client.setGoal('fizz-top', { status: 'active' });
     expect(runs[1].args).toEqual(['goal', 'fizz-top', '--resume', '--json']);
+
+    // Dash-leading multiline objectives must ride after '--' so the remote
+    // CLI's option parser doesn't eat them.
+    const dashObjective = '- fix parser\n- add tests';
+    await client.setGoal('fizz-top', { objective: dashObjective, status: 'active' });
+    expect(runs[2].args).toEqual(['goal', 'fizz-top', '--json', '--', dashObjective]);
   });
 
   it('parses last-message and logs JSON payloads', async () => {
