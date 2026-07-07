@@ -195,7 +195,28 @@ describe('gateway server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', 'run tests']);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--', 'run tests']);
+  });
+
+  it('passes multiline messages starting with a dash through send unmangled', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => createCommandResult(args, ''));
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const message = '- fix the parser\n- add regression tests\n- update TODO.md';
+    const response = await fetch(`${server.baseUrl}/send`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sessionId: 'fizz-top',
+        message
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--', message]);
   });
 
   it('relays list, status, and kill routes to the CLI', async () => {
@@ -427,7 +448,7 @@ describe('gateway server', () => {
     });
     expect(setResponse.status).toBe(200);
     expect((await setResponse.json()).goal).toEqual(goal);
-    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', 'ship it', '--budget', '1000', '--json']);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--budget', '1000', '--json', '--', 'ship it']);
 
     const pauseResponse = await fetch(`${server.baseUrl}/goal`, {
       method: 'POST',
@@ -447,6 +468,25 @@ describe('gateway server', () => {
     expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--clear', '--json']);
   });
 
+  it('passes multi-KB multiline objectives starting with a dash through goal unmangled', async () => {
+    const objective = `- fix the parser\n- add regression tests\n${'detail line for the agent to follow\n'.repeat(150)}`;
+    const goal = { threadId: 'thr_1', objective, status: 'active' };
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
+      createCommandResult(args, `${JSON.stringify(goal)}\n`)
+    );
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/goal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'fizz-top', objective, status: 'active' })
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).goal).toEqual(goal);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--json', '--', objective]);
+  });
+
   it('drops the redundant active status when an objective is set (CLI rejects the flag combo)', async () => {
     const goal = { threadId: 'thr_1', objective: 'ship it', status: 'active' };
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) =>
@@ -464,7 +504,7 @@ describe('gateway server', () => {
     });
     expect(response.status).toBe(200);
     expect((await response.json()).goal).toEqual(goal);
-    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', 'ship it', '--budget', '1000', '--json']);
+    expect(executeCommand).toHaveBeenCalledWith(['goal', 'fizz-top', '--budget', '1000', '--json', '--', 'ship it']);
 
     const pausedWithObjective = await fetch(`${server.baseUrl}/goal`, {
       method: 'POST',

@@ -259,8 +259,8 @@ describe('gateway relay integration', () => {
     expect(context.executeCalls).toEqual(
       expect.arrayContaining([
         ['create', '--quiet', '--path', '/host/project', '--cli', 'claude', '--mode', 'native'],
-        ['send', 'fizz-top', 'hello host'],
-        ['send', 'fizz-top', 'message from file'],
+        ['send', 'fizz-top', '--', 'hello host'],
+        ['send', 'fizz-top', '--', 'message from file'],
         ['status', 'fizz-top'],
         ['wait', 'fizz-top', '--timeout', '4', '--interval', '2'],
         ['last-message', 'fizz-top', '-n', '1', '--json'],

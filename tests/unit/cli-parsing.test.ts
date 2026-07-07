@@ -334,6 +334,33 @@ describe('CLI argument parsing', () => {
     });
   });
 
+  it('parses a multiline dash-leading objective passed as one argument after --', async () => {
+    // This is the argv shape the gateway produces: without the '--' terminator,
+    // an objective starting with '-' is misparsed as an unknown option.
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    const objective = '- fix the parser\n- add regression tests\n- update TODO.md';
+    await program.parseAsync(['node', 'dev-sessions', 'goal', 'fizz-top', '--json', '--', objective]);
+
+    expect(manager.setSessionGoal).toHaveBeenCalledWith('fizz-top', {
+      objective,
+      status: 'active'
+    });
+  });
+
+  it('parses a dash-leading message passed as one argument after --', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    const message = '- run the tests\n- report failures';
+    await program.parseAsync(['node', 'dev-sessions', 'send', 'fizz-top', '--', message]);
+
+    expect(manager.sendMessage).toHaveBeenCalledWith('fizz-top', message);
+  });
+
   it('parses goal show, pause, resume, and clear', async () => {
     const manager = createManagerMock();
     const { io, output } = createIoCapture();

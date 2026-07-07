@@ -364,7 +364,9 @@ export function createGatewayApp(
       if (file) {
         args.push('--file', file);
       } else if (message) {
-        args.push(message);
+        // '--' stops option parsing so messages that start with '-' (e.g.
+        // markdown bullets) aren't misread as CLI flags by the host CLI.
+        args.push('--', message);
       }
 
       const result = await executeCommand(args);
@@ -634,6 +636,7 @@ export function createGatewayApp(
     try {
       const sessionId = ensureNonEmptyString(req.body.sessionId, 'sessionId');
       const args = ['goal', sessionId];
+      let objective: string | undefined;
 
       if (req.body.clear === true) {
         if (req.body.objective !== undefined || req.body.status !== undefined || req.body.tokenBudget !== undefined) {
@@ -647,7 +650,7 @@ export function createGatewayApp(
             jsonError(res, 400, 'objective must be a non-empty string');
             return;
           }
-          args.push(req.body.objective);
+          objective = req.body.objective;
         }
         if (req.body.status !== undefined) {
           if (req.body.status !== 'active' && req.body.status !== 'paused') {
@@ -673,13 +676,19 @@ export function createGatewayApp(
           }
           args.push('--budget', String(req.body.tokenBudget));
         }
-        if (args.length === 2) {
+        if (args.length === 2 && objective === undefined) {
           jsonError(res, 400, 'Provide at least one of objective, status, tokenBudget, or clear');
           return;
         }
       }
 
       args.push('--json');
+      if (objective !== undefined) {
+        // Options first, then '--', then the objective: stops option parsing
+        // so objectives that start with '-' (e.g. markdown bullets) aren't
+        // misread as CLI flags by the host CLI.
+        args.push('--', objective);
+      }
       const result = await executeCommand(args);
       const payload = JSON.parse(result.stdout) as unknown;
       res.json({
