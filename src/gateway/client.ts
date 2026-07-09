@@ -277,7 +277,7 @@ export class GatewaySessionManager {
       query.set('interval', String(Math.max(1, options.intervalSeconds)));
     }
 
-    const response = await this.request<WaitGatewayResponse & { goal?: ThreadGoal | null }>(
+    const response = await this.waitRequest<WaitGatewayResponse & { goal?: ThreadGoal | null }>(
       `/wait?${query.toString()}`
     );
     return {
@@ -295,7 +295,7 @@ export class GatewaySessionManager {
       nextTurn: '1'
     });
 
-    const response = await this.request<WaitGatewayResponse>(`/wait?${query.toString()}`);
+    const response = await this.waitRequest<WaitGatewayResponse>(`/wait?${query.toString()}`);
     return response.waitResult;
   }
 
@@ -310,8 +310,18 @@ export class GatewaySessionManager {
       query.set('interval', String(Math.max(1, options.intervalSeconds)));
     }
 
-    const response = await this.request<WaitGatewayResponse>(`/wait?${query.toString()}`);
+    const response = await this.waitRequest<WaitGatewayResponse>(`/wait?${query.toString()}`);
     return response.waitResult;
+  }
+
+  private async waitRequest<T extends WaitGatewayResponse>(requestPath: string): Promise<T> {
+    const response = await this.request<T>(requestPath);
+    if (!response.waitResult || typeof response.waitResult.timedOut !== 'boolean') {
+      throw new Error(
+        'Gateway /wait response is missing waitResult (the gateway connection may have dropped mid-wait)'
+      );
+    }
+    return response;
   }
 
   private async request<T>(
@@ -357,6 +367,16 @@ export class GatewaySessionManager {
         typeof payload.error === 'string' && payload.error.length > 0
           ? payload.error
           : `Gateway request failed with status ${response.status}`;
+      throw new Error(errorMessage);
+    }
+
+    // Streamed endpoints (/wait) commit a 200 status before the command runs, so a
+    // failure after that point can only be reported via an ok:false body envelope.
+    if (payload.ok === false) {
+      const errorMessage =
+        typeof payload.error === 'string' && payload.error.length > 0
+          ? payload.error
+          : `Gateway request failed for ${requestUrl}`;
       throw new Error(errorMessage);
     }
 

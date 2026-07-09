@@ -122,6 +122,40 @@ describe('GatewaySessionManager', () => {
     expect(result).toEqual(payload.waitResult);
   });
 
+  it('throws the in-body error when a streamed wait response reports ok: false', async () => {
+    // /wait commits a 200 status before running the command, so post-headers
+    // failures arrive as { ok: false, error } in an otherwise-200 body.
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse(200, { ok: false, error: 'Codex turn failed: thread is in systemError state' })
+    );
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await expect(manager.waitForSession('fizz-top')).rejects.toThrow(
+      'Codex turn failed: thread is in systemError state'
+    );
+  });
+
+  it('throws a clear error when a wait response has no waitResult', async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse(200, { ok: true }));
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await expect(manager.waitForSession('fizz-top')).rejects.toThrow(
+      /missing waitResult/
+    );
+    await expect(manager.waitForSessionNextTurn('fizz-top')).rejects.toThrow(
+      /missing waitResult/
+    );
+    await expect(manager.waitForSessionGoal('fizz-top')).rejects.toThrow(
+      /missing waitResult/
+    );
+  });
+
   it('throws gateway error payloads for non-2xx responses', async () => {
     const fetchSpy = vi.fn(async () => jsonResponse(404, { error: 'Session not found: fizz-top' }));
     const manager = new GatewaySessionManager({
