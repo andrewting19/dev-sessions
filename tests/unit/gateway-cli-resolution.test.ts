@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startGatewayServer } from '../../src/gateway/server';
 
 async function closeServer(server: Server): Promise<void> {
@@ -65,7 +65,7 @@ describe('gateway CLI resolution', () => {
 
     process.argv[1] = cliPath;
 
-    const started = await startGatewayServer({ port: 0 });
+    const started = await startGatewayServer({ port: 0, enableCodexStatusProjection: false });
     servers.push(started.server);
 
     const address = started.server.address() as AddressInfo;
@@ -81,5 +81,75 @@ describe('gateway CLI resolution', () => {
         })
       })
     );
+  });
+
+  it('starts and stops an injected Codex status projector with the gateway', async () => {
+    const statusProjector = {
+      start: vi.fn(),
+      stop: vi.fn(async () => {}),
+      getStatus: vi.fn(() => ({ state: 'connected' as const, appServerPid: 100 }))
+    };
+    const started = await startGatewayServer({
+      port: 0,
+      executeCommand: async (args) => ({
+        command: args,
+        stdout: '',
+        stderr: '',
+        exitCode: 0
+      }),
+      statusProjector
+    });
+
+    expect(statusProjector.start).toHaveBeenCalledOnce();
+    const response = await fetch(`http://127.0.0.1:${started.port}/health`);
+    await expect(response.json()).resolves.toEqual({
+      status: 'healthy',
+      codexStatusProjection: {
+        state: 'connected',
+        appServerPid: 100
+      }
+    });
+    await closeServer(started.server);
+    await vi.waitFor(() => expect(statusProjector.stop).toHaveBeenCalledOnce());
+  });
+
+  it('keeps gateway health available when the status projector cannot start', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const statusProjector = {
+      start: vi.fn(() => {
+        throw new Error('projection unavailable');
+      }),
+      stop: vi.fn(async () => {}),
+      getStatus: vi.fn(() => ({ state: 'reconnecting' as const, lastError: 'projection unavailable' }))
+    };
+
+    try {
+      const started = await startGatewayServer({
+        port: 0,
+        executeCommand: async (args) => ({
+          command: args,
+          stdout: '',
+          stderr: '',
+          exitCode: 0
+        }),
+        statusProjector
+      });
+      servers.push(started.server);
+
+      const response = await fetch(`http://127.0.0.1:${started.port}/health`);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: 'healthy',
+        codexStatusProjection: {
+          state: 'reconnecting',
+          lastError: 'projection unavailable'
+        }
+      });
+      await closeServer(started.server);
+      servers.pop();
+      await vi.waitFor(() => expect(statusProjector.stop).toHaveBeenCalledOnce());
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

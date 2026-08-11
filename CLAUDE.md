@@ -60,7 +60,7 @@ tests/
 
 - **Codex `ThreadStatus` JSON shape**: The parser in `extractThreadRuntimeStatus` handles three formats: (1) **0.104.0**: `thread.status` is **absent** when idle; `"active"` is `{ "active": { "activeFlags": [...] } }`. (2) **0.105.0+**: tagged objects like `{ "type": "active", "activeFlags": [] }` or `{ "type": "idle" }`. (3) String values like `"idle"`, `"notLoaded"`, `"systemError"`. All three are supported simultaneously. Additionally, `getThreadRuntimeStatus` gracefully handles "no rollout found" errors from `thread/resume` by returning `'notLoaded'` instead of throwing.
 
-- **Inspecting Codex protocol source**: `/tmp/codex` is a clone of the openai/codex repo pinned to tag `rust-v0.139.0` (matching the installed binary). The repo tags every release as `rust-vX.Y.Z`, so when the installed binary is updated just `git -C /tmp/codex fetch --tags && git -C /tmp/codex checkout rust-v<version>`. If `/tmp/codex` is missing, re-clone with `git clone --filter=blob:none https://github.com/openai/codex /tmp/codex`. Protocol types live in `codex-rs/app-server-protocol/src/protocol/`; the goal extension in `codex-rs/ext/goal/`.
+- **Inspecting Codex protocol source**: Do not trust an old fixed checkout or the installed CLI version. First read the running app-server version from its `initialize` result, then check both that tag and the installed CLI tag in the OpenAI Codex repository (`rust-vX.Y.Z`). Protocol types live in `codex-rs/app-server-protocol/src/protocol/`; app-server behavior and tests live in `codex-rs/app-server/`.
 
 - **Codex models are account-dependent**: never hardcode a default model — `gpt-5.3-codex` getting rejected (400 on ChatGPT accounts) broke every new session, and the failure is silent (turn persisted as `completed` with no output, thread → `systemError`). dev-sessions omits `model` from `thread/start`/`thread/resume` unless the user passes `create --model`, letting codex resolve its configured default.
 
@@ -70,7 +70,9 @@ tests/
 
 - **Codex state lives in-process**: `assistantHistory`, `lastTurnStatus` etc. are in-memory on the backend instance. Each CLI invocation is a new process — don't trust in-memory state across invocations. Always reconcile against the app-server or session store.
 
-- **Session store has no locking**: Read-modify-write on `~/.dev-sessions/sessions.json` is not atomic. Concurrent CLI calls can race. Known issue, tracked in TODO.md.
+- **Session store locking**: All read-modify-write operations on `~/.dev-sessions/sessions.json` use the `mkdir` lock in `SessionStore`. Event code that must compare a current turn ID before it writes must use `updateSessionAtomically()` so the check and update share one lock.
+
+- **Codex status projection**: The gateway owns one projector connection per host. It consumes global `thread/status/changed` notifications and reconciles only active/latch records plus loaded tracked threads. Never resume every stored thread, and never retain item deltas in the projector. Remote Codex work needs a gateway on the remote host.
 
 - **tmux tri-state liveness**: `sessionExists()` returns `'alive' | 'dead' | 'unknown'`. Only prune on `'dead'`. `'unknown'` (unexpected tmux error) should preserve the session record.
 

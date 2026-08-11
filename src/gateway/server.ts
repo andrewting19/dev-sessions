@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import express, { Request, Response } from 'express';
 import { SessionCli, SessionMode, StoredSession } from '../types';
+import { CodexStatusProjector, CodexStatusProjectorControl } from './codex-status-projector';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_GATEWAY_PORT = 6767;
@@ -31,6 +32,8 @@ export interface StartGatewayServerOptions {
   host?: string;
   cliBinary?: string;
   executeCommand?: GatewayCommandExecutor;
+  enableCodexStatusProjection?: boolean;
+  statusProjector?: CodexStatusProjectorControl;
 }
 
 export class GatewayCommandError extends Error {
@@ -251,7 +254,8 @@ export function createGatewayCommandExecutor(
 }
 
 export function createGatewayApp(
-  executeCommand: GatewayCommandExecutor = createGatewayCommandExecutor()
+  executeCommand: GatewayCommandExecutor = createGatewayCommandExecutor(),
+  getCodexStatusProjection?: () => unknown
 ): express.Express {
   const app = express();
   app.use((req, res, next) => {
@@ -707,7 +711,10 @@ export function createGatewayApp(
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
-      status: 'healthy'
+      status: 'healthy',
+      ...(getCodexStatusProjection
+        ? { codexStatusProjection: getCodexStatusProjection() }
+        : {})
     });
   });
 
@@ -718,12 +725,19 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   app: express.Express;
   server: Server;
   port: number;
+  statusProjector?: CodexStatusProjectorControl;
 }> {
   const port = options.port ?? resolveGatewayPort();
   const host = options.host ?? '127.0.0.1';
   const cliBinary = options.cliBinary ?? resolveGatewayCliBinary();
   const executeCommand = options.executeCommand ?? createGatewayCommandExecutor(cliBinary);
-  const app = createGatewayApp(executeCommand);
+  const statusProjector = options.enableCodexStatusProjection === false
+    ? undefined
+    : options.statusProjector ?? new CodexStatusProjector();
+  const app = createGatewayApp(
+    executeCommand,
+    statusProjector ? () => statusProjector.getStatus() : undefined
+  );
 
   const server = await new Promise<Server>((resolve, reject) => {
     const startedServer = app.listen(port, host, () => {
@@ -739,9 +753,26 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   const listeningPort = typeof address === 'object' && address !== null ? address.port : port;
   console.log(`[gateway] ${new Date().toISOString()} server started port=${listeningPort} cli=${cliBinary}`);
 
+  if (statusProjector) {
+    try {
+      statusProjector.start();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[gateway] Codex status projector could not start: ${message}`);
+    }
+
+    server.once('close', () => {
+      void statusProjector.stop().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[gateway] Codex status projector could not stop cleanly: ${message}`);
+      });
+    });
+  }
+
   return {
     app,
     server,
-    port: listeningPort
+    port: listeningPort,
+    statusProjector
   };
 }

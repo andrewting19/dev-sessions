@@ -96,6 +96,19 @@ export class SessionStore {
     championId: string,
     partial: Partial<Omit<StoredSession, 'championId'>>
   ): Promise<StoredSession | undefined> {
+    return this.updateSessionAtomically(championId, () => partial);
+  }
+
+  /**
+   * Read, check, and update one session while the store lock is held.
+   * Return undefined from the updater to keep the current record unchanged.
+   */
+  async updateSessionAtomically(
+    championId: string,
+    updater: (
+      current: Readonly<StoredSession>
+    ) => Partial<Omit<StoredSession, 'championId'>> | undefined
+  ): Promise<StoredSession | undefined> {
     return this.withLock(async () => {
       const store = await this.readStore();
       const index = store.sessions.findIndex((candidate) => candidate.championId === championId);
@@ -104,10 +117,16 @@ export class SessionStore {
         return undefined;
       }
 
+      const current = store.sessions[index];
+      const partial = updater(current);
+      if (!partial) {
+        return current;
+      }
+
       const updatedSession: StoredSession = {
-        ...store.sessions[index],
+        ...current,
         ...partial,
-        championId: store.sessions[index].championId
+        championId: current.championId
       };
 
       store.sessions[index] = updatedSession;

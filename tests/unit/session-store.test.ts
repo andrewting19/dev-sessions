@@ -66,6 +66,29 @@ describe('SessionStore', () => {
     expect(sessions[0].championId).toBe('riven-jg');
   });
 
+  it('keeps a newer value when an atomic guarded update sees a turn mismatch', async () => {
+    await store.upsertSession({
+      ...createSession('fizz-top'),
+      cli: 'codex',
+      codexTurnInProgress: true,
+      codexActiveTurnId: 'turn-new'
+    });
+
+    await store.updateSessionAtomically('fizz-top', (current) => {
+      if (current.codexActiveTurnId !== 'turn-old') {
+        return undefined;
+      }
+      return {
+        codexTurnInProgress: false,
+        codexActiveTurnId: undefined
+      };
+    });
+
+    const session = await store.getSession('fizz-top');
+    expect(session?.codexTurnInProgress).toBe(true);
+    expect(session?.codexActiveTurnId).toBe('turn-new');
+  });
+
   it('prunes sessions in bulk', async () => {
     await store.upsertSession(createSession('fizz-top'));
     await store.upsertSession(createSession('riven-jg'));

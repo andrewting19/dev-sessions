@@ -112,11 +112,17 @@ dev-sessions kill fizz-top
 - **Session ID**: Thread ID from `thread/start` response
 - **Conversation continuity**: Multiple sends share the same thread — full history preserved
 - **Message delivery**: `turn/start` JSON-RPC call (non-blocking — returns after `turn/started`)
-- **Turn detection**: `turn/completed` notification; also `thread/status/changed` (Active → Idle)
+- **Turn detection**: `turn/completed` notification; the gateway also projects global `thread/status/changed` events into the session store
 - **Message history**: Fetched via `thread/read` with `includeTurns: true` — persisted across process restarts
-- **Turn status**: Checked via `thread/resume` which returns live `Thread.status`
+- **Turn status**: Checked on demand via `thread/resume`; while the gateway runs, event projection keeps stored status current without a later command
 - **Session liveness**: Verified via `thread/list` — checks specific thread ID exists, not just daemon PID
 - **Daemon lifecycle**: Auto-started on first `create --cli codex`, auto-stopped when last Codex session is killed
+
+The gateway owns one long-lived Codex status projector. It does not resume all stored
+threads. On startup or reconnect, it uses status-only `thread/read` calls for stored
+active records and currently loaded tracked threads. It also ignores high-volume item
+deltas. Each host needs its own gateway for event-driven status. `GET /health` shows
+whether the local projector is waiting, connected, reconnecting, or stopped.
 
 ### Codex App-Server Protocol
 
@@ -288,7 +294,7 @@ Spawns Claude inside Docker via a `clauded` binary on the host. See [claude-ting
 ```bash
 npm install
 npm run build
-npm test        # 123 unit + integration tests
+npm test        # unit + integration tests
 npm link        # link global dev-sessions to this repo's dist/
 ```
 
