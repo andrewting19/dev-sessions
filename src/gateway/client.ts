@@ -128,6 +128,9 @@ export class GatewaySessionManager {
     if (typeof options.description === 'string' && options.description.trim().length > 0) {
       payload.description = options.description;
     }
+    if (typeof options.model === 'string' && options.model.trim().length > 0) {
+      payload.model = options.model;
+    }
 
     const response = await this.request<CreateGatewayResponse>('/create', {
       method: 'POST',
@@ -154,6 +157,7 @@ export class GatewaySessionManager {
       host: options.host,
       description: options.description,
       status: 'active',
+      model: typeof payload.model === 'string' ? payload.model : undefined,
       createdAt: timestamp,
       lastUsed: timestamp
     };

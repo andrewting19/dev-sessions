@@ -54,6 +54,30 @@ describe('GatewaySessionManager', () => {
     });
   });
 
+  it('sends Grok Build and model selection to the gateway API', async () => {
+    const session = { ...createSessionFixture('garen-top'), cli: 'grok' as const, mode: 'native' as const };
+    const fetchSpy = vi.fn(async () => jsonResponse(200, { sessionId: 'garen-top', session }));
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await manager.createSession({
+      path: '/host/project',
+      cli: 'grok',
+      mode: 'native',
+      model: 'grok-4.6'
+    });
+
+    const [, requestInit] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(String((requestInit as RequestInit).body))).toEqual({
+      path: '/host/project',
+      cli: 'grok',
+      mode: 'native',
+      model: 'grok-4.6'
+    });
+  });
+
   it('falls back to list lookup when create response omits session details', async () => {
     const session = createSessionFixture('riven-jg');
     const fetchSpy = vi

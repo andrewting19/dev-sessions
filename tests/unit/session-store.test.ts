@@ -66,6 +66,20 @@ describe('SessionStore', () => {
     expect(sessions[0].championId).toBe('riven-jg');
   });
 
+  it('persists Grok session and prompt latch fields', async () => {
+    const grokSession: StoredSession = {
+      ...createSession('garen-top'),
+      cli: 'grok',
+      model: 'grok-4.6',
+      grokTurnInProgress: true,
+      grokActivePromptId: 'prompt-1'
+    };
+    await store.upsertSession(grokSession);
+
+    const reloaded = await new SessionStore(storePath).getSession('garen-top');
+    expect(reloaded).toEqual(grokSession);
+  });
+
   it('keeps a newer value when an atomic guarded update sees a turn mismatch', async () => {
     await store.upsertSession({
       ...createSession('fizz-top'),

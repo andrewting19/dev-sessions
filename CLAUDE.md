@@ -42,6 +42,7 @@ src/
   backends/
     claude-tmux.ts       # Claude: tmux + JSONL transcript parsing
     codex-appserver.ts   # Codex: WebSocket JSON-RPC 2.0 client + daemon management
+    grok-appserver.ts    # Grok Build: authenticated WebSocket ACP client + daemon
   transcript/
     claude-parser.ts     # Parses Claude JSONL transcripts
   gateway/
@@ -63,6 +64,8 @@ tests/
 - **Inspecting Codex protocol source**: Do not trust an old fixed checkout or the installed CLI version. First read the running app-server version from its `initialize` result, then check both that tag and the installed CLI tag in the OpenAI Codex repository (`rust-vX.Y.Z`). Protocol types live in `codex-rs/app-server-protocol/src/protocol/`; app-server behavior and tests live in `codex-rs/app-server/`.
 
 - **Codex models are account-dependent**: never hardcode a default model — `gpt-5.3-codex` getting rejected (400 on ChatGPT accounts) broke every new session, and the failure is silent (turn persisted as `completed` with no output, thread → `systemError`). dev-sessions omits `model` from `thread/start`/`thread/resume` unless the user passes `create --model`, letting codex resolve its configured default.
+
+- **Grok uses its public ACP server**: use `grok agent serve` on loopback, not tmux or headless-output parsing. The server persists in-flight work across client disconnects. `send` must keep its client-minted prompt ID, and `wait` must prefer the durable replayed `turn_completed` event for that exact ID. The private server secret appears in Grok's startup log, so both the daemon state file and log must remain mode `0600`.
 
 - **Goals (`/goal`)**: `thread/goal/set|get|clear` JSON-RPC methods, stable + default-enabled since codex 0.133.0. Setting an active goal on an idle thread immediately starts an autonomous continuation turn server-side (no `turn/start` needed); the daemon keeps driving turns until the goal is terminal. `dev-sessions goal` always sends `status: 'active'` together with a new objective, because objective-only updates on a `complete` goal leave it complete and nothing runs.
 

@@ -74,7 +74,7 @@
 - [x] claude-ting docs updated with host setup instructions (gateway install, install-skill)
 
 ### Testing ✅
-- [x] 126 automated tests (unit + integration) across 17 test files
+- [x] 289 passing automated tests across 28 test files (real-provider tests are opt-in)
 - [x] Real E2E verified: Claude Code send→wait→last-message
 - [x] Real E2E verified: Codex send→wait→last-message (PONG test)
 - [x] Real E2E verified: Docker gateway relay
@@ -120,6 +120,19 @@
 ### Phase 11: Gateway client surfaces streamed /wait errors ✅
 - [x] **Gateway client `timedOut` crash fixed** — `/wait` commits a 200 status up front (to satisfy fetch header timeouts) and keepalives, so a host-side `wait` failure after that point arrives as `{ ok: false, error }` in a 200 body. The client only checked HTTP status, returned the error envelope as if it were a wait payload, and callers crashed with `Cannot read properties of undefined (reading 'timedOut')` — burying the real error. Found live when a TCC-revoked codex app-server hung every turn and sandboxed agents saw only the cryptic crash. The client now throws the in-body `error` for any `ok: false` envelope and fails clearly if a wait response lacks `waitResult` (dropped connection).
 
+### Phase 12: Grok Build ACP backend ✅
+- [x] `create --cli grok` uses the official `grok agent serve` WebSocket ACP server; no tmux or terminal scraping
+- [x] Private loopback daemon with startup locking, random authentication secret, owner-only state/log files, stale-process recovery, and last-session shutdown
+- [x] Existing Grok login is selected from ACP initialize metadata; failures direct the user to `grok login`
+- [x] `create --model grok-4.6` and Grok's configured default model both work
+- [x] Non-blocking `send` uses a client-minted prompt ID and waits for ACP queue/turn acceptance
+- [x] Exact `wait` uses durable `turn_completed` replay; status uses the live Grok roster
+- [x] `last-message`, `logs`, follow-up continuity, `inspect`, `list`, and `kill` work through the shared backend interface
+- [x] Grok is wired through the Docker gateway and generic remote SSH routing; model overrides now pass through the gateway create route
+- [x] Unit tests cover the backend adapter, daemon security/lifecycle, ACP wire contract, CLI parsing, session persistence, and gateway relay
+- [x] Opt-in real Grok E2E covers create → send → wait → replay → follow-up continuity → close
+- [x] Live Grok 4.6 E2E passed on macOS with Grok Build 1.0.3, then stable auto-updated to 1.0.4
+
 ### Phase 10: Multiline/dash-safe goal & send through the gateway ✅
 - [x] **Gateway argv mangling fixed** — the gateway relayed `goal` objectives and `send` messages as bare positional argv; any content starting with `-` (e.g. a markdown bullet list) hit commander's option parser on the host and failed with `unknown option`. This was the "multiline prompts through goal fail at the host proxy" bug — size was never the issue (argv handles multi-KB fine); the trigger was a leading dash. Routes now pass free text after a `--` terminator.
 - [x] **`goal -f/--file <path>`** — read the objective from a file (`-` for stdin), same as `send`/`ask`; preferred for long/multiline objectives so they never travel through argv
@@ -129,6 +142,7 @@
 ## Known Issues (open)
 
 - [ ] **Codex ignores `--mode` flag** — `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of mode. Low priority since native mode always uses permissive settings.
+- [ ] **Grok ignores `--mode` flag** — Grok always uses the native ACP server with automatic approval; Grok + Docker is not implemented.
 - [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-native modes.
 - [ ] **Claude permission prompts undetectable** — TUI elements, not in JSONL transcript. `status` reports `working` instead of `waiting_for_input`. Only affects `native` mode.
 - [x] **Codex `last-message` returns empty** — fixed: `waitForTurnCompletion` now includes `assistantText` in result; `wait` persists it to `lastAssistantMessages` in the store.

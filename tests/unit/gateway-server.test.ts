@@ -158,6 +158,37 @@ describe('gateway server', () => {
     expect(executeCommand).toHaveBeenNthCalledWith(2, ['list', '--json']);
   });
 
+  it('relays Grok Build and its model override through create', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      if (args[0] === 'create') {
+        return createCommandResult(args, 'garen-top\n');
+      }
+      return createCommandResult(args, '[]\n');
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        path: '/host/project',
+        cli: 'grok',
+        mode: 'native',
+        model: 'grok-4.6'
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(executeCommand).toHaveBeenNthCalledWith(1, [
+      'create', '--quiet',
+      '--path', '/host/project',
+      '--cli', 'grok',
+      '--mode', 'native',
+      '--model', 'grok-4.6'
+    ]);
+  });
+
   it('sends messages using --file when provided', async () => {
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => createCommandResult(args, ''));
     const server = await startGatewayTestServer(executeCommand);

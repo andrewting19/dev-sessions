@@ -6,6 +6,8 @@ import { ClaudeBackend } from './backends/claude-backend';
 import { ClaudeTmuxBackend } from './backends/claude-tmux';
 import { CodexBackend } from './backends/codex-backend';
 import { CodexAppServerBackend } from './backends/codex-appserver';
+import { GrokBackend } from './backends/grok-backend';
+import { GrokAppServerBackend } from './backends/grok-appserver';
 import { GatewaySessionManager, resolveGatewayBaseUrl } from './gateway/client';
 import { RoutingSessionManager } from './remote/routing-manager';
 import { SessionStore, createDefaultSessionStore } from './session-store';
@@ -51,12 +53,16 @@ export class SessionManager {
   constructor(
     private readonly store: SessionStore,
     claudeBackend: Backend,
-    codexBackend: Backend
+    codexBackend: Backend,
+    grokBackend?: Backend
   ) {
     this.backends = new Map([
       ['claude', claudeBackend],
       ['codex', codexBackend]
     ]);
+    if (grokBackend) {
+      this.backends.set('grok', grokBackend);
+    }
   }
 
   private getBackend(cli: SessionCli): Backend {
@@ -432,7 +438,8 @@ export function createDefaultSessionManager(
   const local = new SessionManager(
     store,
     new ClaudeBackend(new ClaudeTmuxBackend()),
-    new CodexBackend(new CodexAppServerBackend())
+    new CodexBackend(new CodexAppServerBackend()),
+    new GrokBackend(new GrokAppServerBackend())
   );
 
   return new RoutingSessionManager(local, store, { localVersion: pkg.version, env });

@@ -32,7 +32,7 @@ dev-sessions kill "$sid"
 ## Commands
 
 ```
-create   [-p path] [-d desc] [--cli claude|codex] [-m native|docker] [--model m] [--host ssh-target] [-q]
+create   [-p path] [-d desc] [--cli claude|codex|grok] [-m native|docker] [--model m] [--host ssh-target] [-q]
 ask      <id> [message] [-f file] [-t seconds]   → send + wait + print reply
 send     <id> [message] [-f file]                (use `-f -` to read from stdin)
 wait     <id> [-t seconds] [-i interval_seconds] [--goal | --next-turn]

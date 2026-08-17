@@ -4,7 +4,7 @@ export type SessionStatus = 'active' | 'inactive';
 
 export type AgentTurnStatus = 'idle' | 'working' | 'waiting_for_input';
 
-export type SessionCli = 'claude' | 'codex';
+export type SessionCli = 'claude' | 'codex' | 'grok';
 
 export type CodexTurnStatus = 'completed' | 'failed' | 'interrupted';
 
@@ -27,6 +27,8 @@ export interface StoredSession {
   codexTurnInProgress?: boolean;
   codexActiveTurnId?: string;
   codexLastCompletedAt?: string;
+  grokTurnInProgress?: boolean;
+  grokActivePromptId?: string;
   lastTurnStatus?: CodexTurnStatus;
   lastTurnError?: string;
   lastAssistantMessages?: string[];

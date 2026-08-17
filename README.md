@@ -4,10 +4,10 @@ A CLI tool for coding agents to spawn, manage, and communicate with other coding
 
 ## Why
 
-Coding agents (Claude Code, Codex) are increasingly capable of orchestrating parallel work. But the tooling for agent-to-agent communication is either over-engineered (MCP servers, HTTP gateways, SSH tunnels) or too primitive (raw tmux commands).
+Coding agents (Claude Code, Codex, and Grok Build) are increasingly capable of orchestrating parallel work. But the tooling for agent-to-agent communication is either over-engineered (MCP servers, HTTP gateways, SSH tunnels) or too primitive (raw tmux commands).
 
 `dev-sessions` provides a clean CLI interface that lets agents:
-- **Spawn** new coding agent sessions (Claude Code or Codex)
+- **Spawn** new coding agent sessions (Claude Code, Codex, or Grok Build)
 - **Send** tasks and messages to those sessions
 - **Wait** for turns to complete (transcript-aware, not terminal scraping)
 - **Read** structured responses (clean assistant text, not ANSI noise)
@@ -18,6 +18,8 @@ Coding agents (Claude Code, Codex) are increasingly capable of orchestrating par
 ```bash
 npm install -g dev-sessions
 ```
+
+For Grok sessions, install the official [Grok Build CLI](https://github.com/xai-org/grok-build), run `grok login`, and use Grok Build 1.0.3 or later.
 
 Or clone and link for local development:
 ```bash
@@ -83,6 +85,10 @@ sid=$(dev-sessions create --cli codex -q)
 dev-sessions send $sid "hello"
 dev-sessions send $sid "what did I just say?"   # has context from first message
 dev-sessions last-message $sid                   # "You said hello"
+
+# Grok Build session (persistent ACP server; grok-4.6 is the current default)
+gid=$(dev-sessions create --cli grok --model grok-4.6 -q)
+dev-sessions ask $gid "Reply with exactly GROK_OK" --timeout 120
 
 # Autonomous goal (codex only) — the agent keeps working across turns until done
 dev-sessions goal $sid "Make all unit tests pass, then mark the goal complete." --budget 200000
@@ -151,6 +157,20 @@ Codex resolves its own configured default, which tracks model deprecations acros
 releases — hardcoding a default here is how sessions silently break (a rejected model
 yields a turn recorded as `completed` with no output and a `systemError` thread).
 
+### Grok Build Sessions
+- **Backend**: Persistent `grok agent serve` daemon (Agent Client Protocol over authenticated WebSocket)
+- **Session ID**: Grok session ID from the standard ACP `session/new` response
+- **Conversation continuity**: Follow-up sends use `session/load` on the same durable Grok session
+- **Message delivery**: `session/prompt` with a client-minted prompt ID; `send` returns after Grok accepts the prompt or queue entry
+- **Turn detection**: Durable `turn_completed` replay for the exact prompt ID, with the live roster as a compatibility fallback
+- **Message history**: Rebuilt from ACP `session/load` replay, including user and assistant message chunks
+- **Turn status**: `x.ai/sessions/list` maps Grok `working`, `idle`, and `needs_input` to the common status values
+- **Model selection**: Grok resolves its configured default unless `create --model` is passed; `grok-4.6` is supported directly
+- **Permissions**: Native sessions start the Grok agent server with automatic approval enabled
+- **Daemon lifecycle**: Private loopback server with a random secret; state and logs use owner-only permissions and stop after the last local Grok session is killed
+
+The implementation uses Grok Build's public ACP server. It does not use tmux, terminal input injection, output scraping, or Grok's plain headless command.
+
 ### Champion IDs
 
 Sessions get human-readable IDs like `fizz-top`, `riven-jg` (League of Legends champion + role). These map to internal UUIDs/thread IDs but are easier to type and remember.
@@ -165,7 +185,7 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 
 | Command | Description |
 |---------|-------------|
-| `create [options]` | Spawn a new agent session (`--cli claude|codex`, `--mode native|docker`, `--model <m>` codex model override, `--host <ssh-target>` remote host, `--json` full record, `-q` quiet) |
+| `create [options]` | Spawn a new agent session (`--cli claude|codex|grok`, `--mode native|docker`, `--model <m>` Codex/Grok model override, `--host <ssh-target>` remote host, `--json` full record, `-q` quiet) |
 | `ask <id> <msg>` | One-shot round trip: send, wait for the reply, print it (`--file`, `--timeout`) |
 | `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents, `--file -` for stdin) |
 | `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state; `--next-turn` returns at the next turn boundary (codex only, includes goal continuation turns) |
@@ -184,7 +204,7 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| `native` | `--mode native` | Runs with `--dangerously-skip-permissions` — auto-approves all tool calls (default) |
+| `native` | `--mode native` | Runs with automatic tool approval (default) |
 | `docker` | `--mode docker` | Runs via `clauded` Docker wrapper (Claude Code only) |
 
 ## Session Lifecycle
@@ -281,7 +301,8 @@ Spawns Claude inside Docker via a `clauded` binary on the host. See [claude-ting
 ## Known Limitations
 
 - **Codex ignores `--mode`**: Always runs with `approvalPolicy: never` / full access regardless of mode flag.
-- **`docker` mode is Claude-only**: Codex + Docker not implemented.
+- **Grok ignores `--mode`**: Always uses the native ACP server with automatic approval.
+- **`docker` mode is Claude-only**: Codex/Grok + Docker is not implemented.
 - **Session store uses file locking**: Concurrent operations are serialized via lockfile. A crashed process holding the lock is auto-recovered after 30 seconds.
 - **Gateway port conflict**: Default port 6767 can conflict with Docker. Use `DEV_SESSIONS_GATEWAY_PORT` to override.
 - **No `respond` command**: No structured way to respond to `waiting_for_input` sessions. Only matters for non-native modes.

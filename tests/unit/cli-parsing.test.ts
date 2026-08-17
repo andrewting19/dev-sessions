@@ -173,6 +173,31 @@ describe('CLI argument parsing', () => {
     });
   });
 
+  it('parses Grok Build with a Grok 4.6 model override', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync([
+      'node',
+      'dev-sessions',
+      'create',
+      '--path',
+      '/tmp/project',
+      '--cli',
+      'grok',
+      '--model',
+      'grok-4.6'
+    ]);
+
+    expect(manager.createSession).toHaveBeenCalledWith({
+      path: '/tmp/project',
+      cli: 'grok',
+      mode: 'native',
+      model: 'grok-4.6'
+    });
+  });
+
   it('defaults create path to HOST_PATH when running in sandbox mode', async () => {
     const previousSandbox = process.env.DEV_SESSIONS_SANDBOX;
     const previousHostPath = process.env.HOST_PATH;

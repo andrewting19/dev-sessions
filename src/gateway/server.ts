@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_GATEWAY_PORT = 6767;
 const DEFAULT_GATEWAY_CLI_BINARY = 'dev-sessions';
 
-const ALLOWED_CLIS: SessionCli[] = ['claude', 'codex'];
+const ALLOWED_CLIS: SessionCli[] = ['claude', 'codex', 'grok'];
 const ALLOWED_MODES: SessionMode[] = ['native', 'docker'];
 
 // Node/undici fetch has a default headersTimeout and bodyTimeout of 300s.
@@ -52,6 +52,7 @@ interface CreateBody {
   mode?: unknown;
   description?: unknown;
   host?: unknown;
+  model?: unknown;
 }
 
 interface SendBody {
@@ -296,7 +297,7 @@ export function createGatewayApp(
 
       if (req.body.cli !== undefined) {
         if (typeof req.body.cli !== 'string' || !ALLOWED_CLIS.includes(req.body.cli as SessionCli)) {
-          jsonError(res, 400, 'cli must be one of: claude, codex');
+          jsonError(res, 400, 'cli must be one of: claude, codex, grok');
           return;
         }
         args.push('--cli', req.body.cli);
@@ -319,6 +320,14 @@ export function createGatewayApp(
         if (req.body.description.trim().length > 0) {
           args.push('--description', req.body.description);
         }
+      }
+
+      if (req.body.model !== undefined) {
+        if (typeof req.body.model !== 'string' || req.body.model.trim().length === 0) {
+          jsonError(res, 400, 'model must be a non-empty string');
+          return;
+        }
+        args.push('--model', req.body.model);
       }
 
       const createResult = await executeCommand(args);

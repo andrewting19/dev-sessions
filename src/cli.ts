@@ -272,7 +272,7 @@ export function buildProgram(
     .option('-d, --description <description>', 'Optional description for the session')
     .addOption(
       new Option('--cli <cli>', 'Agent CLI backend')
-        .choices(['claude', 'codex'])
+        .choices(['claude', 'codex', 'grok'])
         .default('claude')
     )
     .addOption(
@@ -280,7 +280,7 @@ export function buildProgram(
         .choices(['native', 'docker'])
         .default('native')
     )
-    .option('--model <model>', 'Model override (codex only; defaults to the codex-configured model)')
+    .option('--model <model>', 'Model override (Codex or Grok; defaults to the selected CLI configuration)')
     .option(
       '--host <ssh-target>',
       'Create the session on a remote host over SSH (anything ssh accepts, e.g. an alias from ~/.ssh/config); ' +
@@ -292,7 +292,7 @@ export function buildProgram(
     .action(async (options: {
       path?: string;
       description?: string;
-      cli: 'claude' | 'codex';
+      cli: 'claude' | 'codex' | 'grok';
       mode: 'native' | 'docker';
       model?: string;
       host?: string;

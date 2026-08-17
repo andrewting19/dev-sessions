@@ -15,6 +15,7 @@ export interface BackendCreateResult {
   appServerPort?: number;
   model?: string;
   codexTurnInProgress?: boolean;
+  grokTurnInProgress?: boolean;
   lastAssistantMessages?: string[];
 }
 

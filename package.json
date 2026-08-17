@@ -1,6 +1,6 @@
 {
   "name": "dev-sessions",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CLI tool to spawn and manage coding agent sessions",
   "license": "MIT",
   "bin": {

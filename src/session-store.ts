@@ -26,7 +26,7 @@ function isStoredSession(value: unknown): value is StoredSession {
   return (
     typeof candidate.championId === 'string' &&
     typeof candidate.internalId === 'string' &&
-    (candidate.cli === 'claude' || candidate.cli === 'codex') &&
+    (candidate.cli === 'claude' || candidate.cli === 'codex' || candidate.cli === 'grok') &&
     (candidate.mode === 'native' || candidate.mode === 'docker') &&
     typeof candidate.path === 'string' &&
     (candidate.host === undefined || typeof candidate.host === 'string') &&
@@ -39,6 +39,8 @@ function isStoredSession(value: unknown): value is StoredSession {
     (candidate.codexTurnInProgress === undefined || typeof candidate.codexTurnInProgress === 'boolean') &&
     (candidate.codexActiveTurnId === undefined || typeof candidate.codexActiveTurnId === 'string') &&
     (candidate.codexLastCompletedAt === undefined || typeof candidate.codexLastCompletedAt === 'string') &&
+    (candidate.grokTurnInProgress === undefined || typeof candidate.grokTurnInProgress === 'boolean') &&
+    (candidate.grokActivePromptId === undefined || typeof candidate.grokActivePromptId === 'string') &&
     (candidate.lastTurnStatus === undefined ||
       candidate.lastTurnStatus === 'completed' ||
       candidate.lastTurnStatus === 'failed' ||
