@@ -55,7 +55,7 @@
 - [x] Remove `yolo` mode — `native` is now always permissive (`--dangerously-skip-permissions`)
 
 ### Phase 4: Skills & Install ✅
-- [x] `skills/` directory — dev-sessions CLI guide plus optional delegate guidance
+- [x] `skills/` directory — dev-sessions CLI guide
 - [x] `install-skill` installs all skills at once (`--global`/`--local`, `--claude`/`--codex`, auto-detect)
 
 ### Phase 5: Gateway Daemon ✅

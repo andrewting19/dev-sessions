@@ -51,7 +51,6 @@ src/
     daemon.ts            # launchd/systemd install/uninstall/status
 skills/
   dev-sessions/SKILL.md  # CLI operating guide
-  delegate/SKILL.md      # optional orchestration guidance
 tests/
   unit/                  # Fast, mocked
   integration/           # Hits real tmux, real Codex app-server
