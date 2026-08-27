@@ -50,8 +50,8 @@ src/
     client.ts            # Gateway client (used when DEV_SESSIONS_SANDBOX=1)
     daemon.ts            # launchd/systemd install/uninstall/status
 skills/
-  dev-sessions/SKILL.md  # /dev-sessions skill
-  handoff/SKILL.md       # /handoff skill
+  dev-sessions/SKILL.md  # CLI operating guide
+  delegate/SKILL.md      # optional orchestration guidance
 tests/
   unit/                  # Fast, mocked
   integration/           # Hits real tmux, real Codex app-server

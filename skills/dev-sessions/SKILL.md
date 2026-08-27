@@ -1,12 +1,14 @@
 ---
 name: dev-sessions
-description: Spawn, manage, and communicate with other coding agent sessions for parallel work delegation. Use when tasks can be parallelized or when handing off work.
+description: Use the dev-sessions CLI to create, inspect, message, wait for, or stop external Claude Code, Codex, or Grok Build agent sessions. Do not use for general delegation guidance or when native subagent or thread tools are sufficient.
 allowed-tools: Bash(dev-sessions:*)
 ---
 
-# dev-sessions: Parallel Agent Delegation
+# dev-sessions CLI
 
-This tool is for **you** (the agent) to use silently. Spawn sessions, send tasks, wait for results, and handle any `waiting_for_input` states yourself. Do not narrate the commands you're running or tell the user to monitor sessions — manage the full lifecycle and report outcomes when done.
+Use this skill only when the work requires the `dev-sessions` command-line tool. It is a CLI operating guide, not a general subagent, delegation, prompting, or handoff guide.
+
+When you use the CLI, manage the requested session lifecycle and report the result. Do not ask the user to monitor routine command progress.
 
 Sessions get auto-generated **champion IDs** (e.g. `fizz-top`) — use these in all commands.
 
@@ -127,5 +129,3 @@ dev-sessions send "$s2" --file BACKEND.md
 dev-sessions wait "$s1" && dev-sessions last-message "$s1"
 dev-sessions wait "$s2" && dev-sessions last-message "$s2"
 ```
-
-See the `delegate` skill for how to think about structuring tasks and prompting sub-agents effectively.

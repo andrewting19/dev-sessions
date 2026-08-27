@@ -732,7 +732,7 @@ describe('CLI argument parsing', () => {
     const homeDir = '/home/test-user';
     const { dependencies, mocks } = createInstallSkillDependencies({
       homeDir,
-      skillNames: ['dev-sessions', 'handoff']
+      skillNames: ['dev-sessions', 'delegate']
     });
     const program = buildProgram(manager, io, dependencies);
 
@@ -746,12 +746,12 @@ describe('CLI argument parsing', () => {
       'utf8'
     );
     expect(mocks.writeFile).toHaveBeenCalledWith(
-      path.join(homeDir, '.claude', 'skills', 'handoff', 'SKILL.md'),
+      path.join(homeDir, '.claude', 'skills', 'delegate', 'SKILL.md'),
       '# mock skill',
       'utf8'
     );
     expect(output.stdout).toContain('dev-sessions');
-    expect(output.stdout).toContain('handoff');
+    expect(output.stdout).toContain('delegate');
   });
 
   it('logs command calls getSessionLogs and prints turns with role labels', async () => {
@@ -797,7 +797,7 @@ describe('CLI argument parsing', () => {
     const homeDir = '/home/test-user';
     const { dependencies, mocks } = createInstallSkillDependencies({
       homeDir,
-      skillNames: ['dev-sessions', 'handoff']
+      skillNames: ['dev-sessions', 'delegate']
     });
     const program = buildProgram(manager, io, dependencies);
 
@@ -806,12 +806,12 @@ describe('CLI argument parsing', () => {
     // 2 skills × 2 targets = 4 writes
     expect(mocks.writeFile).toHaveBeenCalledTimes(4);
     expect(mocks.writeFile).toHaveBeenCalledWith(
-      path.join(homeDir, '.claude', 'skills', 'handoff', 'SKILL.md'),
+      path.join(homeDir, '.claude', 'skills', 'delegate', 'SKILL.md'),
       '# mock skill',
       'utf8'
     );
     expect(mocks.writeFile).toHaveBeenCalledWith(
-      path.join(homeDir, '.codex', 'skills', 'handoff', 'SKILL.md'),
+      path.join(homeDir, '.codex', 'skills', 'delegate', 'SKILL.md'),
       '# mock skill',
       'utf8'
     );

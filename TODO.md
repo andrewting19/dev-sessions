@@ -55,9 +55,8 @@
 - [x] Remove `yolo` mode — `native` is now always permissive (`--dangerously-skip-permissions`)
 
 ### Phase 4: Skills & Install ✅
-- [x] `skills/` directory — multi-skill bundle (dev-sessions + handoff)
+- [x] `skills/` directory — dev-sessions CLI guide plus optional delegate guidance
 - [x] `install-skill` installs all skills at once (`--global`/`--local`, `--claude`/`--codex`, auto-detect)
-- [x] `handoff` skill ported from claude-ting MCP → CLI
 
 ### Phase 5: Gateway Daemon ✅
 - [x] `gateway install` — installs as macOS launchd service or Linux systemd unit
