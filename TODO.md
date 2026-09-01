@@ -145,6 +145,7 @@
 
 ## Known Issues (open)
 
+- [ ] **Optional shared Codex app-server mode** — keep the current dev-sessions-owned daemon as the default for now. Add an explicit opt-in endpoint that can connect to a Desktop-owned Codex app-server over `unix://PATH`. In shared mode, dev-sessions must never spawn, reset, or stop that external server; the gateway status projector and all Codex commands must use the same endpoint. Add unit tests for Unix-socket WebSocket transport and non-ownership, plus a live create → send → wait proof that confirms no second Codex app-server starts. Treat the gateway restart and migration of active sessions as a separate, approval-gated rollout.
 - [ ] **Codex ignores `--mode` flag** — `approvalPolicy` and `sandbox` are hardcoded to `never`/`danger-full-access` regardless of mode. Low priority since native mode always uses permissive settings.
 - [ ] **Grok ignores `--mode` flag** — Grok always uses the native ACP server with automatic approval; Grok + Docker is not implemented.
 - [ ] **No `respond`/`approve` command** — when a session hits `waiting_for_input`, the orchestrator has no structured way to respond. Only matters for non-native modes.
