@@ -542,7 +542,11 @@ export function createGatewayApp(
       // If headers were already sent (keepalive started), write error as JSON body
       if (res.headersSent) {
         const message = error instanceof Error ? error.message : String(error);
-        res.end(JSON.stringify({ ok: false, error: message }));
+        res.end(JSON.stringify({
+          ok: false,
+          error: message,
+          ...(isGatewayCommandError(error) ? { output: serializeCommandResult(error.result) } : {})
+        }));
         return;
       }
 

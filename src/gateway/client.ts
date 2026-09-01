@@ -98,6 +98,25 @@ export function translateContainerPath(
   return containerPath;
 }
 
+/**
+ * Turn a gateway error envelope into an Error that carries the host CLI's own
+ * stderr and exit code. Without this, every relayed failure collapses to the
+ * bare "Command failed: <host cmd>" line and is undiagnosable from a container.
+ */
+export function buildGatewayError(payload: Record<string, unknown>, fallback: string): Error & { exitCode?: number } {
+  const envelopeError = typeof payload.error === 'string' && payload.error.length > 0 ? payload.error : fallback;
+  const output = payload.output as { stderr?: unknown; exitCode?: unknown } | undefined;
+  const stderr = typeof output?.stderr === 'string' ? output.stderr.trim() : '';
+  const exitCode = typeof output?.exitCode === 'number' ? output.exitCode : undefined;
+
+  const message = stderr.length > 0 ? `${stderr}\n(${envelopeError})` : envelopeError;
+  const error = new Error(message) as Error & { exitCode?: number };
+  if (exitCode !== undefined && exitCode !== 0) {
+    error.exitCode = exitCode;
+  }
+  return error;
+}
+
 export class GatewaySessionManager {
   private readonly baseUrl: string;
 
@@ -367,21 +386,13 @@ export class GatewaySessionManager {
     }
 
     if (!response.ok) {
-      const errorMessage =
-        typeof payload.error === 'string' && payload.error.length > 0
-          ? payload.error
-          : `Gateway request failed with status ${response.status}`;
-      throw new Error(errorMessage);
+      throw buildGatewayError(payload, `Gateway request failed with status ${response.status}`);
     }
 
     // Streamed endpoints (/wait) commit a 200 status before the command runs, so a
     // failure after that point can only be reported via an ok:false body envelope.
     if (payload.ok === false) {
-      const errorMessage =
-        typeof payload.error === 'string' && payload.error.length > 0
-          ? payload.error
-          : `Gateway request failed for ${requestUrl}`;
-      throw new Error(errorMessage);
+      throw buildGatewayError(payload, `Gateway request failed for ${requestUrl}`);
     }
 
     return payload as T;

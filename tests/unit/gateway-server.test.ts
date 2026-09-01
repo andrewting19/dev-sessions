@@ -352,6 +352,29 @@ describe('gateway server', () => {
     expect(body.output.exitCode).toBe(124);
   });
 
+  it('includes host stderr in the in-body error for non-timeout wait failures', async () => {
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      throw new GatewayCommandError('Command failed: dev-sessions wait ivern-adc --timeout 30', {
+        command: ['dev-sessions', ...args],
+        stdout: '',
+        stderr: 'Codex turn failed: stream disconnected before completion\n',
+        exitCode: 1
+      });
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const response = await fetch(`${server.baseUrl}/wait?id=ivern-adc&timeout=30`);
+    // Headers are committed before the command runs, so the status stays 200.
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe('Command failed: dev-sessions wait ivern-adc --timeout 30');
+    expect(body.output.stderr).toContain('Codex turn failed: stream disconnected before completion');
+    expect(body.output.exitCode).toBe(1);
+  });
+
   it('sends keepalive newlines during long wait requests', async () => {
     // Simulate a wait that takes longer than the keepalive interval
     const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {

@@ -132,6 +132,11 @@
 - [x] Opt-in real Grok E2E covers create → send → wait → replay → follow-up continuity → close
 - [x] Live Grok 4.6 E2E passed on macOS with Grok Build 1.0.3, then stable auto-updated to 1.0.4
 
+### Phase 13: Relay passes host stderr and exit code through ✅
+- [x] Gateway client turns `{ ok: false, error, output }` envelopes into errors that carry the host CLI's stderr and non-zero exit code, so container-side `status`/`wait` failures are diagnosable instead of a bare `Command failed: <host cmd>`
+- [x] Streamed `/wait` in-body errors now include the `output` block too (previously only the pre-headers path did)
+- [x] Root cause of the reported "wait fails mid-turn" bug: the Codex thread was in a sticky `systemError` state after a model stream disconnect (`adapter_eof`); `status`/`wait` exit 1 by design until the next turn starts. Documented in the skill.
+
 ### Phase 10: Multiline/dash-safe goal & send through the gateway ✅
 - [x] **Gateway argv mangling fixed** — the gateway relayed `goal` objectives and `send` messages as bare positional argv; any content starting with `-` (e.g. a markdown bullet list) hit commander's option parser on the host and failed with `unknown option`. This was the "multiline prompts through goal fail at the host proxy" bug — size was never the issue (argv handles multi-KB fine); the trigger was a leading dash. Routes now pass free text after a `--` terminator.
 - [x] **`goal -f/--file <path>`** — read the objective from a file (`-` for stdin), same as `send`/`ask`; preferred for long/multiline objectives so they never travel through argv

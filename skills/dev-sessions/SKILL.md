@@ -55,6 +55,13 @@ automatically — nothing else changes. The session survives dropped connections
 `wait` is a safe reattach. Exit codes are preserved (124 = wait timeout); exit
 255 means the SSH transport failed, not the session.
 
+Codex failure semantics: if the last turn died (for example a model stream
+disconnect), `status` and plain `wait` exit 1 with the Codex error text until a
+new `send` starts the next turn. The session is idle, not stuck — resend to
+recover. `--next-turn` and `goal --json` do not report this, so do not use them
+to decide whether a turn succeeded. Inside a container, the relay passes the
+host CLI's stderr and exit code through, so the message is the same as on host.
+
 ## Goals (codex only) — autonomous multi-turn objectives
 
 A **goal** makes a codex session work autonomously across turns until the objective

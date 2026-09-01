@@ -190,6 +190,75 @@ describe('GatewaySessionManager', () => {
     await expect(manager.getSessionStatus('fizz-top')).rejects.toThrow('Session not found: fizz-top');
   });
 
+  it('surfaces the host CLI stderr and exit code from relayed command failures', async () => {
+    // A Codex thread in systemError makes the host `status` exit 1 with a clear
+    // message; the relay must not collapse that to a bare "Command failed".
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse(500, {
+        ok: false,
+        error: 'Command failed: dev-sessions status ivern-adc',
+        output: {
+          command: ['node', 'dev-sessions', 'status', 'ivern-adc'],
+          stdout: '',
+          stderr: 'Codex app-server is in a system error state: stream disconnected before completion\n',
+          exitCode: 1
+        }
+      })
+    );
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    let caught: unknown;
+    try {
+      await manager.getSessionStatus('ivern-adc');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(
+      'Codex app-server is in a system error state: stream disconnected before completion\n' +
+        '(Command failed: dev-sessions status ivern-adc)'
+    );
+    expect((caught as { exitCode?: number }).exitCode).toBe(1);
+  });
+
+  it('surfaces stderr from streamed wait failures reported in-body', async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse(200, {
+        ok: false,
+        error: 'Command failed: dev-sessions wait ivern-adc --timeout 30',
+        output: {
+          command: ['node', 'dev-sessions', 'wait', 'ivern-adc', '--timeout', '30'],
+          stdout: '',
+          stderr: 'Codex turn failed: stream disconnected before completion\n',
+          exitCode: 1
+        }
+      })
+    );
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await expect(manager.waitForSession('ivern-adc')).rejects.toThrow(
+      /^Codex turn failed: stream disconnected before completion\n\(Command failed: dev-sessions wait ivern-adc --timeout 30\)$/
+    );
+  });
+
+  it('keeps the envelope error when a failure carries no stderr', async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse(500, { ok: false, error: 'boom', output: { command: [], stdout: '', stderr: '', exitCode: 1 } })
+    );
+    const manager = new GatewaySessionManager({
+      baseUrl: 'http://gateway.test:6767',
+      fetchFn: fetchSpy as unknown as typeof fetch
+    });
+
+    await expect(manager.getSessionStatus('ivern-adc')).rejects.toThrow(/^boom$/);
+  });
+
   it('routes send/list/status/last-message/kill to the expected gateway endpoints', async () => {
     const fetchSpy = vi.fn(async (requestUrl: string) => {
       if (requestUrl.endsWith('/list')) {
