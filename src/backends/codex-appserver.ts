@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, open as openFile, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import os from 'node:os';
@@ -119,9 +120,30 @@ const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not found/i;
 const THREAD_READ_UNMATERIALIZED_PATTERN = /includeTurns is unavailable before first user message/i;
 const THREAD_READ_NOT_FOUND_PATTERN = /thread not loaded|thread not found|no rollout found|unknown thread/i;
 const APP_SERVER_URL_PATTERN = /ws:\/\/127\.0\.0\.1:(\d+)/i;
+const MACOS_APP_CODEX_BIN = '/Applications/ChatGPT.app/Contents/Resources/codex';
+
+export function resolveCodexExecutable(
+  configuredPath: string | undefined = process.env.DEV_SESSIONS_CODEX_BIN,
+  platform: NodeJS.Platform = process.platform,
+  macosAppBinaryExists: boolean = existsSync(MACOS_APP_CODEX_BIN)
+): string {
+  const override = configuredPath?.trim();
+  if (override) {
+    return override;
+  }
+
+  if (platform === 'darwin' && macosAppBinaryExists) {
+    return MACOS_APP_CODEX_BIN;
+  }
+
+  return 'codex';
+}
 
 function defaultSpawnCodexDaemon(args: string[], options: Parameters<typeof spawn>[2]): ChildProcess {
-  return spawn('codex', args, options);
+  return spawn(resolveCodexExecutable(), args, {
+    ...options,
+    cwd: options?.cwd ?? os.tmpdir()
+  });
 }
 
 function getDaemonStateFilePath(): string {
