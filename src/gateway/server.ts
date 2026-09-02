@@ -34,6 +34,8 @@ export interface StartGatewayServerOptions {
   executeCommand?: GatewayCommandExecutor;
   enableCodexStatusProjection?: boolean;
   statusProjector?: CodexStatusProjectorControl;
+  enableAutomationWorker?: boolean;
+  automationTickIntervalMs?: number;
 }
 
 export class GatewayCommandError extends Error {
@@ -59,6 +61,9 @@ interface SendBody {
   sessionId?: unknown;
   message?: unknown;
   file?: unknown;
+  sourceSessionId?: unknown;
+  idempotencyKey?: unknown;
+  replyToMessageId?: unknown;
 }
 
 interface KillBody {
@@ -170,10 +175,10 @@ export function resolveGatewayCliBinary(
     typeof argv[1] === 'string' && argv[1].trim().length > 0 ? path.resolve(argv[1]) : undefined;
   const candidates = [
     argvBinary,
-    path.resolve(moduleDir, '..', 'cli.js'),
     path.resolve(moduleDir, '..', 'index.js'),
-    path.resolve(moduleDir, '..', '..', 'dist', 'cli.js'),
-    path.resolve(moduleDir, '..', '..', 'dist', 'index.js')
+    path.resolve(moduleDir, '..', 'cli.js'),
+    path.resolve(moduleDir, '..', '..', 'dist', 'index.js'),
+    path.resolve(moduleDir, '..', '..', 'dist', 'cli.js')
   ];
 
   for (const candidate of candidates) {
@@ -373,7 +378,16 @@ export function createGatewayApp(
         return;
       }
 
-      const args = ['send', sessionId];
+      const args = ['send', sessionId, '--json'];
+      if (typeof req.body.sourceSessionId === 'string' && req.body.sourceSessionId.length > 0) {
+        args.push('--from', req.body.sourceSessionId);
+      }
+      if (typeof req.body.idempotencyKey === 'string' && req.body.idempotencyKey.length > 0) {
+        args.push('--idempotency-key', req.body.idempotencyKey);
+      }
+      if (typeof req.body.replyToMessageId === 'string' && req.body.replyToMessageId.length > 0) {
+        args.push('--reply-to', req.body.replyToMessageId);
+      }
       if (file) {
         args.push('--file', file);
       } else if (message) {
@@ -383,8 +397,16 @@ export function createGatewayApp(
       }
 
       const result = await executeCommand(args);
+      let queuedMessage: unknown;
+      try {
+        queuedMessage = JSON.parse(result.stdout);
+      } catch {
+        // Older 0.x clients return only a human-readable confirmation. Keep
+        // that relay path working during a rolling local/remote upgrade.
+      }
       res.json({
         ok: true,
+        message: queuedMessage,
         output: serializeCommandResult(result)
       });
     } catch (error: unknown) {
@@ -393,6 +415,203 @@ export function createGatewayApp(
         return;
       }
 
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post('/resume', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const taskId = ensureNonEmptyString(body.taskId, 'taskId');
+      const args = ['resume', taskId, '--json'];
+      const fields: Array<[string, string]> = [
+        ['path', '--path'], ['description', '--description'], ['cli', '--cli'], ['mode', '--mode'],
+        ['model', '--model'], ['host', '--host'], ['championId', '--id']
+      ];
+      for (const [field, flag] of fields) {
+        if (typeof body[field] === 'string' && body[field].length > 0) args.push(flag, body[field] as string);
+      }
+      const result = await executeCommand(args);
+      res.json({ ok: true, session: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/messages', async (req: Request, res: Response) => {
+    try {
+      const args = ['messages'];
+      if (typeof req.query.sessionId === 'string' && req.query.sessionId.length > 0) args.push(req.query.sessionId);
+      if (typeof req.query.status === 'string' && req.query.status.length > 0) args.push('--status', req.query.status);
+      if (typeof req.query.limit === 'string' && req.query.limit.length > 0) args.push('--limit', req.query.limit);
+      if (typeof req.query.host === 'string' && req.query.host.length > 0) args.push('--host', req.query.host);
+      args.push('--json');
+      const result = await executeCommand(args);
+      res.json({ ok: true, messages: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/message', async (req: Request, res: Response) => {
+    try {
+      const id = ensureNonEmptyString(req.query.id, 'id');
+      const args = ['message', 'show', id];
+      if (typeof req.query.sessionId === 'string' && req.query.sessionId.length > 0) {
+        args.push('--session', req.query.sessionId);
+      }
+      const result = await executeCommand(args);
+      res.json({ ok: true, message: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      if (isGatewayCommandError(error) && /message not found/i.test(error.result.stderr)) {
+        res.json({ ok: true, message: null });
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  for (const action of ['cancel', 'retry'] as const) {
+    app.post(`/message/${action}`, async (req: Request, res: Response) => {
+      try {
+        const body = req.body as Record<string, unknown>;
+        const args = ['message', action, ensureNonEmptyString(body.id, 'id')];
+        if (typeof body.routeSessionId === 'string' && body.routeSessionId.length > 0) {
+          args.push('--session', body.routeSessionId);
+        }
+        const result = await executeCommand(args);
+        res.json({ ok: true, message: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+      } catch (error: unknown) {
+        handleRouteError(res, error);
+      }
+    });
+  }
+
+  app.post('/message/reply', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const args = ['message', 'reply', ensureNonEmptyString(body.id, 'id')];
+      if (typeof body.routeSessionId === 'string' && body.routeSessionId.length > 0) {
+        args.push('--session', body.routeSessionId);
+      }
+      if (typeof body.idempotencyKey === 'string' && body.idempotencyKey.length > 0) {
+        args.push('--idempotency-key', body.idempotencyKey);
+      }
+      const result = await executeCommand(args.concat(['--', ensureNonEmptyString(body.body, 'body')]));
+      res.json({ ok: true, message: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post('/schedule', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const args = [
+        'schedule', 'create', '--json', '--name', ensureNonEmptyString(body.name, 'name'),
+        '--cron', ensureNonEmptyString(body.cron, 'cron'), '--message', ensureNonEmptyString(body.message, 'message')
+      ];
+      if (typeof body.timezone === 'string') args.push('--timezone', body.timezone);
+      if (typeof body.targetSessionId === 'string') args.push('--session', body.targetSessionId);
+      const template = body.newSession as Record<string, unknown> | undefined;
+      if (template) {
+        args.push('--new-session', '--path', ensureNonEmptyString(template.path, 'newSession.path'));
+        if (typeof template.cli === 'string') args.push('--cli', template.cli);
+        if (typeof template.mode === 'string') args.push('--mode', template.mode);
+        if (typeof template.model === 'string') args.push('--model', template.model);
+        if (typeof template.description === 'string') args.push('--description', template.description);
+      }
+      if (typeof body.host === 'string') args.push('--host', body.host);
+      if (typeof body.misfirePolicy === 'string') args.push('--misfire', body.misfirePolicy);
+      if (typeof body.overlapPolicy === 'string') args.push('--overlap', body.overlapPolicy);
+      if (typeof body.maxLatenessMs === 'number') {
+        args.push('--max-lateness', `${Math.max(1, Math.ceil(body.maxLatenessMs / 60_000))}m`);
+      }
+      const result = await executeCommand(args);
+      res.json({ ok: true, schedule: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/schedules', async (req: Request, res: Response) => {
+    try {
+      const args = ['schedules', '--json'];
+      if (typeof req.query.host === 'string' && req.query.host.length > 0) args.push('--host', req.query.host);
+      const result = await executeCommand(args);
+      res.json({ ok: true, schedules: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/schedule', async (req: Request, res: Response) => {
+    try {
+      const result = await executeCommand(['schedule', 'show', ensureNonEmptyString(req.query.id, 'id')]);
+      res.json({ ok: true, schedule: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      if (isGatewayCommandError(error) && /schedule not found/i.test(error.result.stderr)) {
+        res.json({ ok: true, schedule: null });
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  for (const action of ['pause', 'resume', 'delete'] as const) {
+    app.post(`/schedule/${action}`, async (req: Request, res: Response) => {
+      try {
+        const body = req.body as Record<string, unknown>;
+        const result = await executeCommand(['schedule', action, ensureNonEmptyString(body.id, 'id')]);
+        res.json({ ok: true, schedule: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+      } catch (error: unknown) {
+        handleRouteError(res, error);
+      }
+    });
+  }
+
+  app.post('/schedule/run', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const result = await executeCommand(['schedule', 'run', ensureNonEmptyString(body.id, 'id')]);
+      res.json({ ok: true, run: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/runs', async (req: Request, res: Response) => {
+    try {
+      const args = ['runs'];
+      if (typeof req.query.scheduleId === 'string' && req.query.scheduleId.length > 0) args.push(req.query.scheduleId);
+      if (typeof req.query.limit === 'string' && req.query.limit.length > 0) args.push('--limit', req.query.limit);
+      if (typeof req.query.host === 'string' && req.query.host.length > 0) args.push('--host', req.query.host);
+      args.push('--json');
+      const result = await executeCommand(args);
+      res.json({ ok: true, runs: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get('/run', async (req: Request, res: Response) => {
+    try {
+      const result = await executeCommand(['run', ensureNonEmptyString(req.query.id, 'id')]);
+      res.json({ ok: true, run: JSON.parse(result.stdout), output: serializeCommandResult(result) });
+    } catch (error: unknown) {
+      if (isGatewayCommandError(error) && /run not found/i.test(error.result.stderr)) {
+        res.json({ ok: true, run: null });
+        return;
+      }
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post('/automation/tick', async (_req: Request, res: Response) => {
+    try {
+      const result = await executeCommand(['automation-tick']);
+      res.json({ ok: true, output: serializeCommandResult(result) });
+    } catch (error: unknown) {
       handleRouteError(res, error);
     }
   });
@@ -765,6 +984,27 @@ export async function startGatewayServer(options: StartGatewayServerOptions = {}
   const address = server.address();
   const listeningPort = typeof address === 'object' && address !== null ? address.port : port;
   console.log(`[gateway] ${new Date().toISOString()} server started port=${listeningPort} cli=${cliBinary}`);
+
+  const enableAutomationWorker = options.enableAutomationWorker ?? options.executeCommand === undefined;
+  if (enableAutomationWorker) {
+    let automationTickRunning = false;
+    const tick = async (): Promise<void> => {
+      if (automationTickRunning) return;
+      automationTickRunning = true;
+      try {
+        await executeCommand(['automation-tick']);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[gateway] automation tick failed: ${message}`);
+      } finally {
+        automationTickRunning = false;
+      }
+    };
+    const timer = setInterval(() => void tick(), options.automationTickIntervalMs ?? 1_000);
+    timer.unref();
+    void tick();
+    server.once('close', () => clearInterval(timer));
+  }
 
   if (statusProjector) {
     try {

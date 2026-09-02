@@ -1,5 +1,16 @@
 import path from 'node:path';
 import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from '../types';
+import type { ResumeSessionOptions } from '../session-manager';
+import type { MessageWaitResult } from '../automation/service';
+import type {
+  CreateScheduleOptions,
+  EnqueueMessageOptions,
+  MessageStatus,
+  QueuedMessage,
+  Schedule,
+  ScheduleRun
+} from '../automation/types';
+import { TERMINAL_MESSAGE_STATUSES } from '../automation/types';
 
 const DEFAULT_GATEWAY_BASE_URL = 'http://host.docker.internal:6767';
 const DEFAULT_CONTAINER_WORKSPACE = '/workspace';
@@ -182,14 +193,159 @@ export class GatewaySessionManager {
     };
   }
 
-  async sendMessage(championId: string, message: string): Promise<void> {
-    await this.request('/send', {
+  async sendMessage(
+    championId: string,
+    message: string,
+    options: EnqueueMessageOptions = {}
+  ): Promise<QueuedMessage | undefined> {
+    const response = await this.request<{ message?: QueuedMessage }>('/send', {
       method: 'POST',
       body: JSON.stringify({
         sessionId: championId,
-        message
+        message,
+        sourceSessionId: options.sourceSessionId,
+        idempotencyKey: options.idempotencyKey,
+        replyToMessageId: options.replyToMessageId
       })
     });
+    return response.message;
+  }
+
+  async resumeTask(options: ResumeSessionOptions): Promise<StoredSession> {
+    const response = await this.request<{ session: StoredSession }>('/resume', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+    return response.session;
+  }
+
+  async listQueuedMessages(
+    championId?: string,
+    statuses?: MessageStatus[],
+    limit: number = 100,
+    host?: string
+  ): Promise<QueuedMessage[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (championId) query.set('sessionId', championId);
+    if (statuses && statuses.length > 0) query.set('status', statuses.join(','));
+    if (host) query.set('host', host);
+    const response = await this.request<{ messages: QueuedMessage[] }>(`/messages?${query.toString()}`);
+    return response.messages;
+  }
+
+  async getQueuedMessage(id: string, routeSessionId?: string): Promise<QueuedMessage | undefined> {
+    const query = new URLSearchParams({ id });
+    if (routeSessionId) query.set('sessionId', routeSessionId);
+    const response = await this.request<{ message: QueuedMessage | null }>(`/message?${query.toString()}`);
+    return response.message ?? undefined;
+  }
+
+  async waitForQueuedMessage(id: string, options: WaitOptions = {}, routeSessionId?: string): Promise<MessageWaitResult> {
+    const timeoutMs = Math.max(0.05, options.timeoutSeconds ?? 300) * 1000;
+    const intervalMs = Math.max(0.05, options.intervalSeconds ?? 1) * 1000;
+    const started = Date.now();
+    while (Date.now() - started <= timeoutMs) {
+      const message = await this.getQueuedMessage(id, routeSessionId);
+      if (!message) throw new Error(`Message not found: ${id}`);
+      if (TERMINAL_MESSAGE_STATUSES.has(message.status)) {
+        return { message, timedOut: false, elapsedMs: Date.now() - started };
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, timeoutMs - (Date.now() - started))));
+    }
+    const message = await this.getQueuedMessage(id, routeSessionId);
+    if (!message) throw new Error(`Message not found: ${id}`);
+    return { message, timedOut: true, elapsedMs: Date.now() - started };
+  }
+
+  async cancelQueuedMessage(id: string, routeSessionId?: string): Promise<QueuedMessage> {
+    return this.messageAction('cancel', id, routeSessionId);
+  }
+
+  async retryQueuedMessage(id: string, routeSessionId?: string): Promise<QueuedMessage> {
+    return this.messageAction('retry', id, routeSessionId);
+  }
+
+  async replyToQueuedMessage(
+    id: string,
+    body: string,
+    options: Pick<EnqueueMessageOptions, 'idempotencyKey'> = {},
+    routeSessionId?: string
+  ): Promise<QueuedMessage> {
+    const response = await this.request<{ message: QueuedMessage }>('/message/reply', {
+      method: 'POST',
+      body: JSON.stringify({ id, body, routeSessionId, idempotencyKey: options.idempotencyKey })
+    });
+    return response.message;
+  }
+
+  async createSchedule(options: CreateScheduleOptions): Promise<Schedule> {
+    const response = await this.request<{ schedule: Schedule }>('/schedule', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+    return response.schedule;
+  }
+
+  async listSchedules(host?: string): Promise<Schedule[]> {
+    const query = new URLSearchParams();
+    if (host) query.set('host', host);
+    const response = await this.request<{ schedules: Schedule[] }>(`/schedules?${query.toString()}`);
+    return response.schedules;
+  }
+
+  async getSchedule(id: string): Promise<Schedule | undefined> {
+    const response = await this.request<{ schedule: Schedule | null }>(`/schedule?id=${encodeURIComponent(id)}`);
+    return response.schedule ?? undefined;
+  }
+
+  async pauseSchedule(id: string): Promise<Schedule> {
+    return this.scheduleAction('pause', id);
+  }
+
+  async resumeSchedule(id: string): Promise<Schedule> {
+    return this.scheduleAction('resume', id);
+  }
+
+  async deleteSchedule(id: string): Promise<Schedule> {
+    return this.scheduleAction('delete', id);
+  }
+
+  async runScheduleNow(id: string): Promise<ScheduleRun> {
+    const response = await this.request<{ run: ScheduleRun }>('/schedule/run', {
+      method: 'POST', body: JSON.stringify({ id })
+    });
+    return response.run;
+  }
+
+  async listScheduleRuns(scheduleId?: string, limit: number = 100, host?: string): Promise<ScheduleRun[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (scheduleId) query.set('scheduleId', scheduleId);
+    if (host) query.set('host', host);
+    const response = await this.request<{ runs: ScheduleRun[] }>(`/runs?${query.toString()}`);
+    return response.runs;
+  }
+
+  async getScheduleRun(id: string): Promise<ScheduleRun | undefined> {
+    const response = await this.request<{ run: ScheduleRun | null }>(`/run?id=${encodeURIComponent(id)}`);
+    return response.run ?? undefined;
+  }
+
+  async runAutomationTick(): Promise<void> {
+    await this.request('/automation/tick', { method: 'POST', body: '{}' });
+  }
+
+  private async messageAction(action: 'cancel' | 'retry', id: string, routeSessionId?: string): Promise<QueuedMessage> {
+    const response = await this.request<{ message: QueuedMessage }>(`/message/${action}`, {
+      method: 'POST', body: JSON.stringify({ id, routeSessionId })
+    });
+    return response.message;
+  }
+
+  private async scheduleAction(action: 'pause' | 'resume' | 'delete', id: string): Promise<Schedule> {
+    const response = await this.request<{ schedule: Schedule }>(`/schedule/${action}`, {
+      method: 'POST', body: JSON.stringify({ id })
+    });
+    return response.schedule;
   }
 
   async killSession(championId: string): Promise<void> {

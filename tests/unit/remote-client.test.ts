@@ -90,7 +90,7 @@ describe('RemoteHostClient', () => {
 
     await client.send('fizz-top', 'a very long\nmulti-line briefing');
 
-    expect(runs[0].args).toEqual(['send', 'fizz-top', '--file', '-']);
+    expect(runs[0].args).toEqual(['send', 'fizz-top', '--file', '-', '--json']);
     expect(runs[0].stdin).toBe('a very long\nmulti-line briefing');
   });
 

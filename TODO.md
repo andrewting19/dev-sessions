@@ -191,7 +191,7 @@ Unit tests cover stale startup repair, false-idle recovery, active/idle events, 
 ### Polish
 - [ ] `send --file` with template variables (inject session context)
 - [ ] `wait` with multiple session IDs (wait for all/any)
-- [ ] Auto-cleanup: kill sessions older than N hours
+- [x] Auto-cleanup: retire idle active-session records after 48 hours, keep backend task metadata, and allow `resume <task-id>`
 - [x] `logs` command — full transcript dump with role labels (Claude: JSONL parse; Codex: thread/read)
 - [x] `inspect` command — dump raw stored session record as JSON
 - [ ] Better error messages throughout (session not found, tmux not installed, codex not installed)
@@ -212,6 +212,8 @@ Unit tests cover stale startup repair, false-idle recovery, active/idle events, 
 **Replaces:** `claude-tmux.ts`, `transcript/claude-parser.ts`, transcript-based `wait` logic.
 **Risk:** `--sdk-url` is undocumented. Keep tmux backend as fallback initially.
 
-- [ ] Session groups (named collections for fan-out workflows)
+- [x] Durable FIFO session messaging with idempotency keys, delivery state, results, and correlated replies
+- [x] Durable host-side schedules for resumed tasks and new tasks, with pause/resume/delete/run-now, misfire and overlap policy, and run history
+- [ ] Named session groups and fan-out policy on top of durable messages
 - [ ] Codex Docker support (`codexed` + tmux + transcript parsing) — P2
 - [ ] Mid-turn steerability — explicit `send --interrupt` or `send --queue` flags once `send` is non-blocking

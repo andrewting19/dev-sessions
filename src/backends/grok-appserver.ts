@@ -744,6 +744,21 @@ export class GrokAppServerBackend {
     }
   }
 
+  async resumeSession(sessionId: string, workspacePath: string, model?: string): Promise<GrokSessionCreateResult> {
+    const { server, client } = await this.connect();
+    try {
+      await client.loadSession(sessionId, workspacePath);
+      return {
+        sessionId,
+        model: model ?? client.defaultModel,
+        appServerPid: server.pid,
+        appServerPort: server.port
+      };
+    } finally {
+      await client.close();
+    }
+  }
+
   async sendMessage(sessionId: string, workspacePath: string, message: string): Promise<GrokSendResult> {
     const { server, client } = await this.connect();
     try {

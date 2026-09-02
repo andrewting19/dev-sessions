@@ -13,6 +13,16 @@ import { RoutingSessionManager } from './remote/routing-manager';
 import { SessionStore, createDefaultSessionStore } from './session-store';
 import pkg from '../package.json';
 import { AgentTurnStatus, GoalUpdate, SessionCli, SessionMode, SessionTurn, StoredSession, ThreadGoal, WaitResult } from './types';
+import { AutomationService, MessageWaitResult } from './automation/service';
+import { AutomationStore, resolveAutomationDatabasePath } from './automation/store';
+import {
+  CreateScheduleOptions,
+  EnqueueMessageOptions,
+  MessageStatus,
+  QueuedMessage,
+  Schedule,
+  ScheduleRun
+} from './automation/types';
 
 export interface CreateSessionOptions {
   path?: string;
@@ -24,6 +34,17 @@ export interface CreateSessionOptions {
   host?: string;
   // Pre-allocated champion ID. Used by the remote relay so the orchestrator's
   // registry can guarantee IDs are unique across hosts.
+  championId?: string;
+}
+
+export interface ResumeSessionOptions {
+  taskId: string;
+  path?: string;
+  cli?: SessionCli;
+  mode?: SessionMode;
+  model?: string;
+  description?: string;
+  host?: string;
   championId?: string;
 }
 
@@ -47,8 +68,27 @@ const TERMINAL_GOAL_STATUSES: ReadonlySet<string> = new Set([
   'budgetLimited'
 ]);
 
+async function mapWithConcurrency<T, U>(
+  values: readonly T[],
+  limit: number,
+  transform: (value: T) => Promise<U>
+): Promise<U[]> {
+  const results = new Array<U>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await transform(values[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export class SessionManager {
   private readonly backends: Map<SessionCli, Backend>;
+  private automation?: AutomationService;
 
   constructor(
     private readonly store: SessionStore,
@@ -71,6 +111,10 @@ export class SessionManager {
       throw new Error(`No backend registered for cli: ${cli}`);
     }
     return backend;
+  }
+
+  attachAutomation(automation: AutomationService): void {
+    this.automation = automation;
   }
 
   async createSession(options: CreateSessionOptions): Promise<StoredSession> {
@@ -107,6 +151,7 @@ export class SessionManager {
       appServerPort: result.appServerPort,
       model: result.model,
       codexTurnInProgress: result.codexTurnInProgress,
+      grokTurnInProgress: result.grokTurnInProgress,
       lastAssistantMessages: result.lastAssistantMessages,
       createdAt: timestamp,
       lastUsed: timestamp
@@ -131,7 +176,61 @@ export class SessionManager {
     return session;
   }
 
-  async sendMessage(championId: string, message: string): Promise<void> {
+  async resumeSession(options: ResumeSessionOptions): Promise<StoredSession> {
+    if (options.host !== undefined) {
+      throw new Error('resume --host requires the routing session manager; this manager only resumes local sessions');
+    }
+    if (!options.cli) throw new Error('--cli is required when the task ID is not in the retired-session index');
+    if (!options.path) throw new Error('--path is required when the task ID is not in the retired-session index');
+    const workspacePath = path.resolve(options.path);
+    await this.assertWorkspacePathExists(workspacePath);
+    const backend = this.getBackend(options.cli);
+    const championId = options.championId !== undefined
+      ? await this.claimRequestedChampionId(options.championId)
+      : await this.findAvailableChampionId();
+    const timestamp = new Date().toISOString();
+    const result = await backend.resume({
+      taskId: options.taskId,
+      championId,
+      workspacePath,
+      description: options.description,
+      mode: options.mode,
+      model: options.model
+    });
+    const session: StoredSession = {
+      championId,
+      internalId: result.internalId,
+      cli: options.cli,
+      mode: result.mode,
+      path: workspacePath,
+      description: options.description,
+      status: 'active',
+      appServerPid: result.appServerPid,
+      appServerPort: result.appServerPort,
+      model: result.model,
+      codexTurnInProgress: result.codexTurnInProgress,
+      grokTurnInProgress: result.grokTurnInProgress,
+      lastAssistantMessages: result.lastAssistantMessages,
+      createdAt: timestamp,
+      lastUsed: timestamp
+    };
+    await this.store.upsertSession(session);
+    return session;
+  }
+
+  async sendMessage(
+    championId: string,
+    message: string,
+    options: EnqueueMessageOptions = {}
+  ): Promise<QueuedMessage | void> {
+    if (!this.automation) return this.sendMessageDirect(championId, message);
+    await this.requireSession(championId);
+    const queued = this.automation.enqueueMessage(championId, message, options);
+    await this.automation.tick();
+    return this.automation.getMessage(queued.id) ?? queued;
+  }
+
+  async sendMessageDirect(championId: string, message: string): Promise<void> {
     const session = await this.requireSession(championId);
     const backend = this.getBackend(session.cli);
     const sendTime = new Date().toISOString();
@@ -246,10 +345,108 @@ export class SessionManager {
     const backend = this.getBackend(session.cli);
 
     await backend.kill(session);
+    this.automation?.rememberRetiredSession(session);
     await this.store.deleteSession(championId);
 
     const remainingActive = (await this.store.listSessions()).filter((s) => s.status === 'active');
     await backend.afterKill(remainingActive);
+  }
+
+  async retireSession(championId: string): Promise<StoredSession> {
+    const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    if (backend.retire) {
+      await backend.retire(session);
+    } else {
+      await backend.kill(session);
+    }
+    await this.store.deleteSession(championId);
+    const remainingActive = (await this.store.listSessions()).filter((s) => s.status === 'active');
+    await backend.afterKill(remainingActive);
+    return session;
+  }
+
+  async resumeTask(options: ResumeSessionOptions): Promise<StoredSession> {
+    if (!this.automation) return this.resumeSession(options);
+    return this.automation.resumeTask(options);
+  }
+
+  listQueuedMessages(championId?: string, statuses?: MessageStatus[], limit?: number): QueuedMessage[] {
+    return this.requireAutomation().listMessages(championId, statuses, limit);
+  }
+
+  getQueuedMessage(id: string): QueuedMessage | undefined {
+    return this.requireAutomation().getMessage(id);
+  }
+
+  waitForQueuedMessage(id: string, options: WaitOptions = {}): Promise<MessageWaitResult> {
+    return this.requireAutomation().waitForMessage(id, options);
+  }
+
+  cancelQueuedMessage(id: string): QueuedMessage {
+    return this.requireAutomation().cancelMessage(id);
+  }
+
+  retryQueuedMessage(id: string): QueuedMessage {
+    return this.requireAutomation().retryMessage(id);
+  }
+
+  replyToQueuedMessage(
+    id: string,
+    body: string,
+    options: Pick<EnqueueMessageOptions, 'idempotencyKey'> = {}
+  ): QueuedMessage {
+    return this.requireAutomation().replyToMessage(id, body, options);
+  }
+
+  createSchedule(options: CreateScheduleOptions): Promise<Schedule> | Schedule {
+    if (options.targetSessionId) {
+      return this.requireAutomation().createSessionSchedule(
+        options as CreateScheduleOptions & { targetSessionId: string }
+      );
+    }
+    return this.requireAutomation().createSchedule(options);
+  }
+
+  listSchedules(): Schedule[] {
+    return this.requireAutomation().listSchedules();
+  }
+
+  getSchedule(id: string): Schedule | undefined {
+    return this.requireAutomation().getSchedule(id);
+  }
+
+  pauseSchedule(id: string): Schedule {
+    return this.requireAutomation().pauseSchedule(id);
+  }
+
+  resumeSchedule(id: string): Schedule {
+    return this.requireAutomation().resumeSchedule(id);
+  }
+
+  deleteSchedule(id: string): Schedule {
+    return this.requireAutomation().deleteSchedule(id);
+  }
+
+  runScheduleNow(id: string): Promise<ScheduleRun> {
+    return this.requireAutomation().runScheduleNow(id);
+  }
+
+  listScheduleRuns(scheduleId?: string, limit?: number): ScheduleRun[] {
+    return this.requireAutomation().listRuns(scheduleId, limit);
+  }
+
+  getScheduleRun(id: string): ScheduleRun | undefined {
+    return this.requireAutomation().getRun(id);
+  }
+
+  runAutomationTick(): Promise<void> {
+    return this.requireAutomation().tick();
+  }
+
+  private requireAutomation(): AutomationService {
+    if (!this.automation) throw new Error('The durable message service is not configured');
+    return this.automation;
   }
 
   async listSessions(): Promise<StoredSession[]> {
@@ -258,17 +455,19 @@ export class SessionManager {
     const sessions = (await this.store.listSessions()).filter(
       (session) => session.status === 'active' && session.host === undefined
     );
-    const livenessChecks = await Promise.all(
-      sessions.map(async (session) => {
+    const livenessChecks = await mapWithConcurrency(
+      sessions,
+      8,
+      async (session) => {
         const backend = this.getBackend(session.cli);
         const liveness = await backend.exists(session);
         return { championId: session.championId, cli: session.cli, liveness };
-      })
+      }
     );
 
     for (const check of livenessChecks) {
       if (check.liveness === 'unknown') {
-        console.warn(`[dev-sessions] tmux returned an unexpected error for session ${check.championId}; keeping session record`);
+        console.warn(`[dev-sessions] ${check.cli} liveness check failed for session ${check.championId}; keeping session record`);
       }
     }
 
@@ -283,6 +482,14 @@ export class SessionManager {
     const deadPruneIds = deadSessions
       .filter((s) => this.getBackend(s.cli).deadSessionPolicy === 'prune')
       .map((s) => s.championId);
+
+    if (this.automation) {
+      for (const session of deadSessions.filter((s) =>
+        this.getBackend(s.cli).deadSessionPolicy === 'prune'
+      )) {
+        this.automation.rememberRetiredSession(session);
+      }
+    }
 
     if (deadDeactivateIds.length > 0) {
       await Promise.all(
@@ -441,6 +648,15 @@ export function createDefaultSessionManager(
     new CodexBackend(new CodexAppServerBackend()),
     new GrokBackend(new GrokAppServerBackend())
   );
+
+  const cleanupHoursRaw = Number(env.DEV_SESSIONS_AUTO_CLEANUP_HOURS ?? 48);
+  const cleanupHours = Number.isFinite(cleanupHoursRaw) && cleanupHoursRaw >= 0 ? cleanupHoursRaw : 48;
+  const automation = new AutomationService(
+    new AutomationStore(resolveAutomationDatabasePath(env)),
+    local,
+    { cleanupHours }
+  );
+  local.attachAutomation(automation);
 
   return new RoutingSessionManager(local, store, { localVersion: pkg.version, env });
 }

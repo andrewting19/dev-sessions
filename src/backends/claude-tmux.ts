@@ -22,6 +22,25 @@ export class ClaudeTmuxBackend {
     mode: SessionMode,
     sessionUuid: string
   ): Promise<void> {
+    await this.startSession(tmuxSessionName, workspacePath, mode, sessionUuid, false);
+  }
+
+  async resumeSession(
+    tmuxSessionName: string,
+    workspacePath: string,
+    mode: SessionMode,
+    sessionUuid: string
+  ): Promise<void> {
+    await this.startSession(tmuxSessionName, workspacePath, mode, sessionUuid, true);
+  }
+
+  private async startSession(
+    tmuxSessionName: string,
+    workspacePath: string,
+    mode: SessionMode,
+    sessionUuid: string,
+    resume: boolean
+  ): Promise<void> {
     if (mode === 'docker') {
       try {
         await this.execCommand('which', ['clauded'], 5000);
@@ -33,7 +52,7 @@ export class ClaudeTmuxBackend {
       }
     }
 
-    const startupCommand = this.buildStartupCommand(workspacePath, mode, sessionUuid);
+    const startupCommand = this.buildStartupCommand(workspacePath, mode, sessionUuid, resume);
 
     await this.execTmux([
       'new-session',
@@ -160,9 +179,15 @@ export class ClaudeTmuxBackend {
     return !SHELL_COMMAND_PATTERN.test(command) && !CONTROL_COMMAND_PATTERN.test(command);
   }
 
-  private buildStartupCommand(workspacePath: string, mode: SessionMode, sessionUuid: string): string {
+  private buildStartupCommand(
+    workspacePath: string,
+    mode: SessionMode,
+    sessionUuid: string,
+    resume: boolean = false
+  ): string {
     const binary = mode === 'docker' ? 'clauded' : 'claude';
-    const commandParts = [`${binary} --session-id ${shellEscape(sessionUuid)}`];
+    const sessionFlag = resume ? '--resume' : '--session-id';
+    const commandParts = [`${binary} ${sessionFlag} ${shellEscape(sessionUuid)}`];
 
     if (mode === 'native') {
       commandParts.push('--dangerously-skip-permissions');

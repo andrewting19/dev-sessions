@@ -20,6 +20,25 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 describe('gateway CLI resolution', () => {
+  it('runs the durable automation worker while the gateway is active', async () => {
+    const executeCommand = vi.fn(async (args: string[]) => ({
+      command: ['dev-sessions', ...args], stdout: '', stderr: '', exitCode: 0
+    }));
+    const started = await startGatewayServer({
+      port: 0,
+      executeCommand,
+      enableCodexStatusProjection: false,
+      enableAutomationWorker: true,
+      automationTickIntervalMs: 10
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      expect(executeCommand).toHaveBeenCalledWith(['automation-tick']);
+    } finally {
+      await new Promise<void>((resolve, reject) => started.server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   const tempDirectories: string[] = [];
   const servers: Server[] = [];
   const originalArgv1 = process.argv[1];
@@ -65,7 +84,11 @@ describe('gateway CLI resolution', () => {
 
     process.argv[1] = cliPath;
 
-    const started = await startGatewayServer({ port: 0, enableCodexStatusProjection: false });
+    const started = await startGatewayServer({
+      port: 0,
+      enableCodexStatusProjection: false,
+      enableAutomationWorker: false
+    });
     servers.push(started.server);
 
     const address = started.server.address() as AddressInfo;

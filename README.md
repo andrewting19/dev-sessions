@@ -12,6 +12,9 @@ Coding agents (Claude Code, Codex, and Grok Build) are increasingly capable of o
 - **Wait** for turns to complete (transcript-aware, not terminal scraping)
 - **Read** structured responses (clean assistant text, not ANSI noise)
 - **Check status** (`idle`, `working`, `waiting_for_input`)
+- **Queue** ordered, durable work for busy sessions
+- **Schedule** recurring work on the machine that runs the session
+- **Resume** any retained backend task or thread by its task ID
 
 ## Installation
 
@@ -100,6 +103,98 @@ dev-sessions goal $sid --json                    # inspect objective, status, to
 dev-sessions kill fizz-top
 ```
 
+### Durable Messages
+
+`send` writes the message to `~/.dev-sessions/state.sqlite` before it tries to
+deliver it. A busy session keeps the message in `waiting`. The host gateway
+delivers it after the current turn. Messages for one session use FIFO order.
+
+```bash
+# A retry with the same key returns the same message record.
+dev-sessions send mayor-mid "Review the open cases." \
+  --from warden-jg --idempotency-key case-scan-2026-09-02 --json
+
+dev-sessions messages mayor-mid --status waiting,delivered --json
+dev-sessions message show msg_<id>
+dev-sessions message wait msg_<id> --timeout 600
+dev-sessions message cancel msg_<id>
+dev-sessions message retry msg_<id>
+
+# Send a correlated callback to the source session.
+dev-sessions message reply msg_<id> "The review is complete."
+```
+
+Message states are `waiting`, `dispatching`, `delivered`, `completed`,
+`failed`, `cancelled`, and `delivery_uncertain`. A worker does not automatically
+retry an uncertain delivery because that could send the same work twice. Inspect
+it, then use `message retry` or `message cancel`.
+
+### Resume by Task ID
+
+The backend task or thread is the durable source of conversation history. There
+is no persistent/disposable session type. An active champion ID is only a registry
+pointer to that backend task.
+
+```bash
+dev-sessions inspect mayor-mid                 # read internalId (the task ID)
+dev-sessions kill mayor-mid
+dev-sessions resume <task-id> -q               # metadata is kept after kill/cleanup
+
+# For a task that is not in the local retired-task index:
+dev-sessions resume <task-id> --cli codex --path /abs/path/to/repo
+dev-sessions resume <task-id> --host buildbox
+```
+
+Automatic cleanup retires idle active-session records after 48 hours. It does
+not delete backend transcripts or threads. Set `DEV_SESSIONS_AUTO_CLEANUP_HOURS`
+to a different number. Set it to `0` to disable automatic cleanup.
+Set `DEV_SESSIONS_STATE_PATH` only when a separate automation database is needed.
+
+### Schedules
+
+Install the gateway daemon on each host that must run work while the controlling
+machine is offline. The gateway checks the durable queue and schedules on that
+host. SQLite claims prevent two gateway or CLI processes from starting the same
+run.
+
+On Linux, installation enables systemd user lingering so the gateway starts
+after a machine restart without an interactive login. If the host policy blocks
+this, the installer gives the required `loginctl` command and stops.
+
+```bash
+dev-sessions gateway install
+
+# Return to the same backend task on each run. Automatic cleanup can retire its
+# active ID; the scheduler resumes the saved task ID when the next run starts.
+dev-sessions schedule create --name "Mayor wake" --cron "0 * * * *" \
+  --timezone America/New_York --session mayor-mid \
+  --message "Review waiting work and send callbacks."
+
+# Create a separate backend task for every run.
+dev-sessions schedule create --name "nightly audit" --cron "0 2 * * *" \
+  --timezone America/New_York --new-session --cli codex \
+  --path /srv/project --message "Run the nightly audit."
+
+# Store and run the schedule on a remote host.
+dev-sessions schedule create --host buildbox --name "remote audit" \
+  --cron "0 2 * * *" --new-session --cli codex --path /srv/project \
+  --message "Run the audit."
+
+dev-sessions schedules --json
+dev-sessions schedules --host buildbox --json
+dev-sessions schedule show sch_<id>
+dev-sessions schedule pause sch_<id>
+dev-sessions schedule resume sch_<id>
+dev-sessions schedule run sch_<id>
+dev-sessions runs sch_<id> --json
+dev-sessions schedule delete sch_<id>
+```
+
+The default downtime policy runs only the latest eligible occurrence. It does
+not replay the full backlog. Use `--misfire skip` to record missed occurrences
+without running them. `--max-lateness` rejects obsolete work. The default overlap
+policy is `skip`; use `--overlap queue` to run one occurrence after the prior run.
+
 ---
 
 ## Architecture
@@ -179,6 +274,10 @@ Sessions get human-readable IDs like `fizz-top`, `riven-jg` (League of Legends c
 
 Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-based locking (`mkdir` as atomic primitive) to serialize concurrent access.
 
+Durable messages, schedules, run history, and retired-task resume metadata are in
+`~/.dev-sessions/state.sqlite`. The database uses WAL mode and owner-only file
+permissions.
+
 ---
 
 ## Commands
@@ -186,8 +285,15 @@ Persisted at `~/.dev-sessions/sessions.json`. All mutating operations use file-b
 | Command | Description |
 |---------|-------------|
 | `create [options]` | Spawn a new agent session (`--cli claude|codex|grok`, `--mode native|docker`, `--model <m>` Codex/Grok model override, `--host <ssh-target>` remote host, `--json` full record, `-q` quiet) |
+| `resume <task-id>` | Resume a backend task or thread (`--host`, or `--cli` and `--path` for an unindexed task) |
 | `ask <id> <msg>` | One-shot round trip: send, wait for the reply, print it (`--file`, `--timeout`) |
-| `send <id> <msg>` | Send a message — returns immediately after delivery (`--file` to send file contents, `--file -` for stdin) |
+| `send <id> <msg>` | Durably queue a message (`--file`, `--from`, `--reply-to`, `--idempotency-key`, `--json`) |
+| `messages [id]` | List durable messages (`--status`, `--host`, `--json`) |
+| `message show\|wait\|cancel\|retry\|reply` | Inspect or control one durable message |
+| `schedule create\|show\|pause\|resume\|delete\|run` | Create or control scheduled work |
+| `schedules` | List schedules (`--host`, `--json`) |
+| `runs [schedule-id]` | List run history (`--host`, `--json`) |
+| `run <run-id>` | Show one schedule run and its result |
 | `wait <id>` | Block until current turn completes (`--timeout` seconds, `--interval` poll interval); `--goal` waits until the goal reaches a terminal state; `--next-turn` returns at the next turn boundary (codex only, includes goal continuation turns) |
 | `goal <id> [objective]` | Codex only: set/show an autonomous goal (`--budget` tokens, `--pause`, `--resume`, `--clear`, `--json`) |
 | `last-message <id>` | Get last N assistant messages (`-n` count, `--json` for a lossless block array) |
@@ -216,7 +322,9 @@ create  →  send  →  [wait / poll status]  →  last-message  →  kill
                         (send follow-up)
 ```
 
-`send` is non-blocking — it returns immediately after the message is delivered. Use `wait` to block until the turn completes.
+`send` is non-blocking. It returns the durable queue receipt after an immediate
+delivery attempt. If the session is busy, the message stays queued. Use `ask` or
+`message wait` to block for the exact message result.
 
 ---
 
@@ -249,9 +357,10 @@ commands run via `bash -lc` so login-shell PATH additions (npm globals, nvm)
 apply; if the binary still isn't found, set `DEV_SESSIONS_REMOTE_BIN` to its
 absolute path before `create --host` (it's remembered per session).
 
-**Durability:** the session and any `/goal` driver run entirely on the remote
-(tmux / app-server daemon, detached). A dropped connection or closed laptop
-doesn't touch them — `wait` is a pure polling reattach, safe to re-run.
+**Durability:** the session, message worker, schedules, and any `/goal` driver run
+entirely on the remote host. Install `dev-sessions gateway` there as a system
+daemon. A dropped connection or closed laptop does not stop that work. Use
+`messages --host`, `schedules --host`, and `runs --host` to inspect host state.
 
 **Exit codes:** preserved exactly (`wait` exits 124 on timeout). Exit **255**
 means the SSH transport failed — distinct from "the session failed" — so

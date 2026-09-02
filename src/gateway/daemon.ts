@@ -143,6 +143,17 @@ export async function installGatewayDaemon(options: {
     const unitContent = buildSystemdUnit(binaryPath, port, logPath, nodePath, userPath);
     await mkdir(path.dirname(unitPath), { recursive: true });
     await writeFile(unitPath, unitContent, 'utf8');
+    try {
+      // A user service otherwise waits for the next login after a reboot.
+      // Linger lets the remote host start scheduled work without a controller.
+      await execFileAsync('loginctl', ['enable-linger']);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not enable systemd user lingering. Run 'sudo loginctl enable-linger ${os.userInfo().username}' ` +
+        `and install the gateway again. ${detail}`
+      );
+    }
     await execFileAsync('systemctl', ['--user', 'daemon-reload']);
     await execFileAsync('systemctl', ['--user', 'enable', '--now', SYSTEMD_SERVICE_NAME]);
     console.log(`[gateway] daemon installed at ${unitPath}`);

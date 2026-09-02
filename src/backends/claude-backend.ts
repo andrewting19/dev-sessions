@@ -10,7 +10,14 @@ import {
   readClaudeTranscript
 } from '../transcript/claude-parser';
 import { AgentTurnStatus, SessionCli, SessionTurn, StoredSession } from '../types';
-import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
+import {
+  Backend,
+  BackendCreateOptions,
+  BackendCreateResult,
+  BackendResumeOptions,
+  BackendStatusResult,
+  BackendWaitResult
+} from './backend';
 import { ClaudeTmuxBackend } from './claude-tmux';
 
 export class ClaudeBackend implements Backend {
@@ -29,6 +36,17 @@ export class ClaudeBackend implements Backend {
     const tmuxSessionName = toTmuxSessionName(options.championId);
     await this.raw.createSession(tmuxSessionName, options.workspacePath, mode, internalId);
     return { internalId, mode };
+  }
+
+  async resume(options: BackendResumeOptions): Promise<BackendCreateResult> {
+    const mode = options.mode ?? 'native';
+    const tmuxSessionName = toTmuxSessionName(options.championId);
+    await this.raw.resumeSession(tmuxSessionName, options.workspacePath, mode, options.taskId);
+    return { internalId: options.taskId, mode };
+  }
+
+  async retire(session: StoredSession): Promise<void> {
+    await this.kill(session);
   }
 
   async preSendStoreFields(session: StoredSession, _sendTime: string): Promise<Partial<StoredSession>> {

@@ -61,6 +61,22 @@ describe('ClaudeTmuxBackend', () => {
     );
   });
 
+  it('resumes a native transcript by Claude session ID', async () => {
+    const backend = new ClaudeTmuxBackend();
+    await backend.resumeSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-existing');
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      expect.arrayContaining([
+        'bash',
+        '-lc',
+        "unset CLAUDECODE; export IS_SANDBOX=1; cd '/tmp/workspace' && claude --resume 'uuid-existing' --dangerously-skip-permissions"
+      ]),
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
+
   it('builds native startup command with dangerously-skip-permissions (always permissive)', async () => {
     const backend = new ClaudeTmuxBackend();
     await backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-native');

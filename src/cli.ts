@@ -3,7 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command, CommanderError, Option } from 'commander';
 import pkg from '../package.json';
-import { createDefaultSessionManager, CreateSessionOptions, GoalWaitResult, WaitOptions } from './session-manager';
+import {
+  createDefaultSessionManager,
+  CreateSessionOptions,
+  GoalWaitResult,
+  ResumeSessionOptions,
+  WaitOptions
+} from './session-manager';
 import {
   getGatewayDaemonStatus,
   installGatewayDaemon,
@@ -11,6 +17,16 @@ import {
 } from './gateway/daemon';
 import { resolveGatewayCliBinary, resolveGatewayPort, startGatewayServer } from './gateway/server';
 import { AgentTurnStatus, GoalUpdate, SessionTurn, StoredSession, ThreadGoal, WaitResult } from './types';
+import {
+  CreateScheduleOptions,
+  EnqueueMessageOptions,
+  MessageStatus,
+  NewSessionTemplate,
+  QueuedMessage,
+  Schedule,
+  ScheduleRun
+} from './automation/types';
+import { MessageWaitResult } from './automation/service';
 
 interface CliIO {
   stdout: Pick<NodeJS.WriteStream, 'write'>;
@@ -52,7 +68,7 @@ async function readStdinToEnd(): Promise<string> {
 
 export interface SessionManagerLike {
   createSession(options: CreateSessionOptions): Promise<StoredSession>;
-  sendMessage(championId: string, message: string): Promise<void>;
+  sendMessage(championId: string, message: string, options?: EnqueueMessageOptions): Promise<QueuedMessage | void>;
   killSession(championId: string): Promise<void>;
   listSessions(): Promise<StoredSession[]>;
   getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]>;
@@ -65,6 +81,28 @@ export interface SessionManagerLike {
   clearSessionGoal(championId: string): Promise<boolean>;
   waitForSessionGoal(championId: string, options: WaitOptions): Promise<GoalWaitResult>;
   waitForSessionNextTurn(championId: string, options: WaitOptions): Promise<WaitResult>;
+  resumeTask?(options: ResumeSessionOptions): Promise<StoredSession>;
+  listQueuedMessages?(championId?: string, statuses?: MessageStatus[], limit?: number, host?: string): QueuedMessage[] | Promise<QueuedMessage[]>;
+  getQueuedMessage?(id: string, routeSessionId?: string): QueuedMessage | undefined | Promise<QueuedMessage | undefined>;
+  waitForQueuedMessage?(id: string, options?: WaitOptions, routeSessionId?: string): Promise<MessageWaitResult>;
+  cancelQueuedMessage?(id: string, routeSessionId?: string): QueuedMessage | Promise<QueuedMessage>;
+  retryQueuedMessage?(id: string, routeSessionId?: string): QueuedMessage | Promise<QueuedMessage>;
+  replyToQueuedMessage?(
+    id: string,
+    body: string,
+    options?: Pick<EnqueueMessageOptions, 'idempotencyKey'>,
+    routeSessionId?: string
+  ): QueuedMessage | Promise<QueuedMessage>;
+  createSchedule?(options: CreateScheduleOptions): Schedule | Promise<Schedule>;
+  listSchedules?(host?: string): Schedule[] | Promise<Schedule[]>;
+  getSchedule?(id: string): Schedule | undefined | Promise<Schedule | undefined>;
+  pauseSchedule?(id: string): Schedule | Promise<Schedule>;
+  resumeSchedule?(id: string): Schedule | Promise<Schedule>;
+  deleteSchedule?(id: string): Schedule | Promise<Schedule>;
+  runScheduleNow?(id: string): Promise<ScheduleRun>;
+  listScheduleRuns?(scheduleId?: string, limit?: number, host?: string): ScheduleRun[] | Promise<ScheduleRun[]>;
+  getScheduleRun?(id: string): ScheduleRun | undefined | Promise<ScheduleRun | undefined>;
+  runAutomationTick?(): Promise<void>;
 }
 
 class CliError extends Error {
@@ -109,6 +147,32 @@ function parseDurationMs(raw: string, flagName: string): number {
 
   const unitMs = match[2] === 'm' ? 60_000 : match[2] === 'h' ? 3_600_000 : 86_400_000;
   return value * unitMs;
+}
+
+const MESSAGE_STATUSES: MessageStatus[] = [
+  'waiting',
+  'dispatching',
+  'delivered',
+  'completed',
+  'failed',
+  'cancelled',
+  'delivery_uncertain'
+];
+
+function parseMessageStatuses(raw: string | undefined): MessageStatus[] | undefined {
+  if (!raw) return undefined;
+  const statuses = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  for (const status of statuses) {
+    if (!MESSAGE_STATUSES.includes(status as MessageStatus)) {
+      throw new CliError(`Unknown message status: ${status}`);
+    }
+  }
+  return statuses as MessageStatus[];
+}
+
+function requireManagerMethod<T>(value: T | undefined, feature: string): T {
+  if (!value) throw new CliError(`${feature} is not available through this dev-sessions connection`);
+  return value;
 }
 
 function getDefaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -328,6 +392,49 @@ export function buildProgram(
       io.stdout.write(`Created session ${session.championId}${where}\n`);
     });
 
+  program
+    .command('resume <task-id>')
+    .description('Resume a backend task or thread and create a new active session ID')
+    .option('-p, --path <path>', 'Workspace path; optional when the task is in the retired-session index')
+    .option('-d, --description <description>', 'Optional session description')
+    .addOption(new Option('--cli <cli>', 'Backend for an unindexed task ID').choices(['claude', 'codex', 'grok']))
+    .addOption(new Option('-m, --mode <mode>', 'Session mode').choices(['native', 'docker']))
+    .option('--model <model>', 'Model override')
+    .option('--host <ssh-target>', 'Resume the task on a remote host')
+    .option('--id <champion-id>', 'Use this new active session ID')
+    .option('--json', 'Print the full session record as JSON')
+    .option('-q, --quiet', 'Only print the new session ID')
+    .action(async (taskId: string, options: {
+      path?: string;
+      description?: string;
+      cli?: 'claude' | 'codex' | 'grok';
+      mode?: 'native' | 'docker';
+      model?: string;
+      host?: string;
+      id?: string;
+      json?: boolean;
+      quiet?: boolean;
+    }) => {
+      const resumeTask = requireManagerMethod(manager.resumeTask?.bind(manager), 'Task resume');
+      const session = await resumeTask({
+        taskId,
+        path: options.path,
+        description: options.description,
+        cli: options.cli,
+        mode: options.mode,
+        model: options.model,
+        host: options.host,
+        championId: options.id
+      });
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(session, null, 2)}\n`);
+      } else if (options.quiet) {
+        io.stdout.write(`${session.championId}\n`);
+      } else {
+        io.stdout.write(`Resumed task ${taskId} as ${session.championId}\n`);
+      }
+    });
+
   const readStdin = dependencies.readStdin ?? readStdinToEnd;
 
   const resolveMessagePayload = async (message: string | undefined, file: string | undefined): Promise<string> => {
@@ -353,10 +460,35 @@ export function buildProgram(
     .command('send <id> [message]')
     .description('Send a message to a session')
     .option('-f, --file <filePath>', 'Read message content from a file (use - for stdin)')
-    .action(async (id: string, message: string | undefined, options: { file?: string }) => {
+    .option('--from <session-id>', 'Source session for replies and correlation')
+    .option('--idempotency-key <key>', 'Return the existing message when this key is retried for the same target')
+    .option('--reply-to <message-id>', 'Connect this message to an earlier message')
+    .option('--json', 'Output the durable message record as JSON')
+    .action(async (id: string, message: string | undefined, options: {
+      file?: string;
+      from?: string;
+      idempotencyKey?: string;
+      replyTo?: string;
+      json?: boolean;
+    }) => {
       const payload = await resolveMessagePayload(message, options.file);
-      await manager.sendMessage(id, payload);
-      io.stdout.write(`Sent message to ${id}\n`);
+      const hasQueueOptions = options.from !== undefined ||
+        options.idempotencyKey !== undefined ||
+        options.replyTo !== undefined;
+      const receipt = hasQueueOptions
+        ? await manager.sendMessage(id, payload, {
+          sourceSessionId: options.from,
+          idempotencyKey: options.idempotencyKey,
+          replyToMessageId: options.replyTo
+        })
+        : await manager.sendMessage(id, payload);
+      if (options.json && receipt) {
+        io.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+      } else if (receipt) {
+        io.stdout.write(`Queued message ${receipt.id} for ${id} (${receipt.status})\n`);
+      } else {
+        io.stdout.write(`Sent message to ${id}\n`);
+      }
     });
 
   program
@@ -364,11 +496,37 @@ export function buildProgram(
     .description('Send a message, wait for the reply, and print it (send + wait + last-message in one step)')
     .option('-f, --file <filePath>', 'Read message content from a file (use - for stdin)')
     .option('-t, --timeout <seconds>', 'Timeout in seconds', '300')
-    .action(async (id: string, message: string | undefined, options: { file?: string; timeout: string }) => {
+    .option('--from <session-id>', 'Source session for replies and correlation')
+    .option('--idempotency-key <key>', 'Deduplicate a retried request')
+    .action(async (id: string, message: string | undefined, options: {
+      file?: string;
+      timeout: string;
+      from?: string;
+      idempotencyKey?: string;
+    }) => {
       const payload = await resolveMessagePayload(message, options.file);
       const timeoutSeconds = parsePositiveInteger(options.timeout, '--timeout');
 
-      await manager.sendMessage(id, payload);
+      const receipt = options.from !== undefined || options.idempotencyKey !== undefined
+        ? await manager.sendMessage(id, payload, {
+          sourceSessionId: options.from,
+          idempotencyKey: options.idempotencyKey
+        })
+        : await manager.sendMessage(id, payload);
+      if (receipt && manager.waitForQueuedMessage) {
+        const queuedResult = await manager.waitForQueuedMessage(receipt.id, { timeoutSeconds }, id);
+        if (queuedResult.timedOut) {
+          throw new CliError(`Timed out waiting for message ${receipt.id} after ${timeoutSeconds}s`, 124);
+        }
+        if (queuedResult.message.status === 'failed') {
+          throw new CliError(queuedResult.message.error ?? `Message ${receipt.id} failed`);
+        }
+        if (queuedResult.message.status === 'cancelled') {
+          throw new CliError(`Message ${receipt.id} was cancelled`);
+        }
+        if (queuedResult.message.result) io.stdout.write(`${queuedResult.message.result}\n`);
+        return;
+      }
       const result = await manager.waitForSession(id, { timeoutSeconds });
       if (result.timedOut) {
         throw new CliError(
@@ -384,6 +542,265 @@ export function buildProgram(
       }
 
       io.stdout.write(`${blocks.join('\n\n')}\n`);
+    });
+
+  program
+    .command('messages [session-id]')
+    .description('List durable messages')
+    .option('--host <ssh-target>', 'List messages stored on a remote host')
+    .option('--status <statuses>', 'Comma-separated message states')
+    .option('--limit <count>', 'Maximum rows', '100')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (sessionId: string | undefined, options: { host?: string; status?: string; limit: string; json?: boolean }) => {
+      const listMessages = requireManagerMethod(manager.listQueuedMessages?.bind(manager), 'Durable messages');
+      const rows = await listMessages(
+        sessionId,
+        parseMessageStatuses(options.status),
+        parsePositiveInteger(options.limit, '--limit'),
+        options.host
+      );
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+        return;
+      }
+      if (rows.length === 0) {
+        io.stdout.write('No messages\n');
+        return;
+      }
+      for (const row of rows) {
+        io.stdout.write(`${row.id}\t${row.status}\t${row.targetSessionId}\t${row.createdAt}\n`);
+      }
+    });
+
+  const messageCommand = program.command('message').description('Inspect or control one durable message');
+
+  messageCommand
+    .command('show <message-id>')
+    .option('--session <session-id>', 'Route the request through this remote session host')
+    .action(async (messageId: string, options: { session?: string }) => {
+      const getMessage = requireManagerMethod(manager.getQueuedMessage?.bind(manager), 'Durable messages');
+      const message = await getMessage(messageId, options.session);
+      if (!message) throw new CliError(`Message not found: ${messageId}`);
+      io.stdout.write(`${JSON.stringify(message, null, 2)}\n`);
+    });
+
+  messageCommand
+    .command('wait <message-id>')
+    .option('--session <session-id>', 'Route the request through this remote session host')
+    .option('-t, --timeout <seconds>', 'Timeout in seconds', '300')
+    .option('-i, --interval <seconds>', 'Polling interval in seconds', '1')
+    .action(async (messageId: string, options: { session?: string; timeout: string; interval: string }) => {
+      const waitMessage = requireManagerMethod(manager.waitForQueuedMessage?.bind(manager), 'Durable messages');
+      const result = await waitMessage(messageId, {
+        timeoutSeconds: parsePositiveInteger(options.timeout, '--timeout'),
+        intervalSeconds: parsePositiveNumber(options.interval, '--interval')
+      }, options.session);
+      if (result.timedOut) throw new CliError(`Timed out waiting for message ${messageId}`, 124);
+      io.stdout.write(`${JSON.stringify(result.message, null, 2)}\n`);
+    });
+
+  messageCommand
+    .command('cancel <message-id>')
+    .option('--session <session-id>', 'Route the request through this remote session host')
+    .action(async (messageId: string, options: { session?: string }) => {
+      const cancel = requireManagerMethod(manager.cancelQueuedMessage?.bind(manager), 'Durable messages');
+      io.stdout.write(`${JSON.stringify(await cancel(messageId, options.session), null, 2)}\n`);
+    });
+
+  messageCommand
+    .command('retry <message-id>')
+    .option('--session <session-id>', 'Route the request through this remote session host')
+    .action(async (messageId: string, options: { session?: string }) => {
+      const retry = requireManagerMethod(manager.retryQueuedMessage?.bind(manager), 'Durable messages');
+      io.stdout.write(`${JSON.stringify(await retry(messageId, options.session), null, 2)}\n`);
+    });
+
+  messageCommand
+    .command('reply <message-id> [message]')
+    .option('-f, --file <filePath>', 'Read message content from a file (use - for stdin)')
+    .option('--session <session-id>', 'Route the request through this remote session host')
+    .option('--idempotency-key <key>', 'Deduplicate a retried reply')
+    .action(async (messageId: string, message: string | undefined, options: {
+      file?: string;
+      session?: string;
+      idempotencyKey?: string;
+    }) => {
+      const reply = requireManagerMethod(manager.replyToQueuedMessage?.bind(manager), 'Durable messages');
+      const payload = await resolveMessagePayload(message, options.file);
+      io.stdout.write(`${JSON.stringify(await reply(
+        messageId,
+        payload,
+        { idempotencyKey: options.idempotencyKey },
+        options.session
+      ), null, 2)}\n`);
+    });
+
+  program
+    .command('schedules')
+    .description('List schedules on this host')
+    .option('--host <ssh-target>', 'List schedules on a remote host')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options: { host?: string; json?: boolean }) => {
+      const listSchedules = requireManagerMethod(manager.listSchedules?.bind(manager), 'Schedules');
+      const schedules = await listSchedules(options.host);
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(schedules, null, 2)}\n`);
+        return;
+      }
+      if (schedules.length === 0) {
+        io.stdout.write('No schedules\n');
+        return;
+      }
+      for (const schedule of schedules) {
+        io.stdout.write(`${schedule.id}\t${schedule.status}\t${schedule.name}\t${schedule.nextRunAt}\n`);
+      }
+    });
+
+  const scheduleCommand = program.command('schedule').description('Create or control a schedule');
+
+  scheduleCommand
+    .command('create')
+    .requiredOption('--name <name>', 'Schedule name')
+    .requiredOption('--cron <expression>', 'Cron expression')
+    .option('--timezone <iana-zone>', 'IANA time zone')
+    .option('--session <session-id>', 'Return to this session task on each run')
+    .option('--new-session', 'Create a new session for every run')
+    .option('--host <ssh-target>', 'Store a new-session schedule on this remote host')
+    .option('-p, --path <path>', 'Workspace path for new sessions')
+    .addOption(new Option('--cli <cli>', 'New-session backend').choices(['claude', 'codex', 'grok']).default('claude'))
+    .addOption(new Option('-m, --mode <mode>', 'New-session mode').choices(['native', 'docker']).default('native'))
+    .option('--model <model>', 'New-session model override')
+    .option('--description <description>', 'New-session description')
+    .option('--message <message>', 'Message to send on each run')
+    .option('-f, --file <filePath>', 'Read the scheduled message from a file (use - for stdin)')
+    .addOption(new Option('--misfire <policy>', 'Downtime behavior').choices(['latest', 'skip']).default('latest'))
+    .addOption(new Option('--overlap <policy>', 'Behavior while an earlier run is active').choices(['skip', 'queue']).default('skip'))
+    .option('--max-lateness <duration>', 'Do not run an obsolete occurrence after this delay', '1h')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (options: {
+      name: string;
+      cron: string;
+      timezone?: string;
+      session?: string;
+      newSession?: boolean;
+      host?: string;
+      path?: string;
+      cli: 'claude' | 'codex' | 'grok';
+      mode: 'native' | 'docker';
+      model?: string;
+      description?: string;
+      message?: string;
+      file?: string;
+      misfire: 'latest' | 'skip';
+      overlap: 'skip' | 'queue';
+      maxLateness: string;
+      json?: boolean;
+    }) => {
+      if ((options.session ? 1 : 0) + (options.newSession ? 1 : 0) !== 1) {
+        throw new CliError('Provide exactly one of --session or --new-session');
+      }
+      if (options.newSession && !options.path) {
+        throw new CliError('--path is required with --new-session');
+      }
+      const message = await resolveMessagePayload(options.message, options.file);
+      const createSchedule = requireManagerMethod(manager.createSchedule?.bind(manager), 'Schedules');
+      const newSession: NewSessionTemplate | undefined = options.newSession
+        ? {
+            path: options.host ? options.path as string : path.resolve(options.path as string),
+            cli: options.cli,
+            mode: options.mode,
+            model: options.model,
+            description: options.description
+          }
+        : undefined;
+      const schedule = await createSchedule({
+        name: options.name,
+        targetSessionId: options.session,
+        newSession,
+        message,
+        cron: options.cron,
+        timezone: options.timezone,
+        misfirePolicy: options.misfire,
+        overlapPolicy: options.overlap,
+        maxLatenessMs: parseDurationMs(options.maxLateness, '--max-lateness'),
+        host: options.host
+      });
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(schedule, null, 2)}\n`);
+      } else {
+        io.stdout.write(`Created schedule ${schedule.id} (${schedule.nextRunAt})\n`);
+      }
+    });
+
+  scheduleCommand
+    .command('show <schedule-id>')
+    .action(async (id: string) => {
+      const getSchedule = requireManagerMethod(manager.getSchedule?.bind(manager), 'Schedules');
+      const schedule = await getSchedule(id);
+      if (!schedule) throw new CliError(`Schedule not found: ${id}`);
+      io.stdout.write(`${JSON.stringify(schedule, null, 2)}\n`);
+    });
+
+  for (const action of ['pause', 'resume', 'delete'] as const) {
+    scheduleCommand
+      .command(`${action} <schedule-id>`)
+      .action(async (id: string) => {
+        const method = action === 'pause'
+          ? manager.pauseSchedule?.bind(manager)
+          : action === 'resume'
+            ? manager.resumeSchedule?.bind(manager)
+            : manager.deleteSchedule?.bind(manager);
+        const run = requireManagerMethod(method, 'Schedules');
+        io.stdout.write(`${JSON.stringify(await run(id), null, 2)}\n`);
+      });
+  }
+
+  scheduleCommand
+    .command('run <schedule-id>')
+    .description('Run a schedule immediately')
+    .action(async (id: string) => {
+      const runNow = requireManagerMethod(manager.runScheduleNow?.bind(manager), 'Schedules');
+      io.stdout.write(`${JSON.stringify(await runNow(id), null, 2)}\n`);
+    });
+
+  program
+    .command('runs [schedule-id]')
+    .description('List schedule runs')
+    .option('--host <ssh-target>', 'List runs stored on a remote host')
+    .option('--limit <count>', 'Maximum rows', '100')
+    .option('--json', 'Output machine-readable JSON')
+    .action(async (scheduleId: string | undefined, options: { host?: string; limit: string; json?: boolean }) => {
+      const listRuns = requireManagerMethod(manager.listScheduleRuns?.bind(manager), 'Schedule runs');
+      const runs = await listRuns(scheduleId, parsePositiveInteger(options.limit, '--limit'), options.host);
+      if (options.json) {
+        io.stdout.write(`${JSON.stringify(runs, null, 2)}\n`);
+        return;
+      }
+      if (runs.length === 0) {
+        io.stdout.write('No runs\n');
+        return;
+      }
+      for (const run of runs) {
+        io.stdout.write(`${run.id}\t${run.status}\t${run.scheduleId}\t${run.scheduledFor}\n`);
+      }
+    });
+
+  program
+    .command('run <run-id>')
+    .description('Show one schedule run')
+    .action(async (id: string) => {
+      const getRun = requireManagerMethod(manager.getScheduleRun?.bind(manager), 'Schedule runs');
+      const run = await getRun(id);
+      if (!run) throw new CliError(`Run not found: ${id}`);
+      io.stdout.write(`${JSON.stringify(run, null, 2)}\n`);
+    });
+
+  program
+    .command('automation-tick', { hidden: true })
+    .description('Process durable messages, schedules, and automatic cleanup once')
+    .action(async () => {
+      const tick = requireManagerMethod(manager.runAutomationTick?.bind(manager), 'Automation');
+      await tick();
     });
 
   program

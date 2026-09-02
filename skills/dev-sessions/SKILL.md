@@ -37,6 +37,13 @@ dev-sessions kill "$sid"
 create   [-p path] [-d desc] [--cli claude|codex|grok] [-m native|docker] [--model m] [--host ssh-target] [-q]
 ask      <id> [message] [-f file] [-t seconds]   → send + wait + print reply
 send     <id> [message] [-f file]                (use `-f -` to read from stdin)
+resume   <task-id> [--host h | --cli c --path p]
+messages [id] [--status states] [--host h] [--json]
+message  show|wait|cancel|retry|reply <message-id>
+schedule create|show|pause|resume|delete|run ...
+schedules [--host h] [--json]
+runs     [schedule-id] [--host h] [--json]
+run      <run-id>
 wait     <id> [-t seconds] [-i interval_seconds] [--goal | --next-turn]
 last-message <id> [-n count] [--json]
 status   <id>          → idle | working | waiting_for_input
@@ -44,6 +51,35 @@ goal     <id> [objective] [-f file] [--budget tokens] [--pause|--resume|--clear]
 list     [--json]
 logs     <id> [--json]
 kill     <id> | --all | --older-than <30m|72h|7d>
+```
+
+## Durable work
+
+`send` is durable and ordered per target session. A busy target keeps the message
+in `waiting` until its current turn ends. Use an idempotency key when a caller can
+retry the request:
+
+```bash
+dev-sessions send "$sid" "Do the work." --idempotency-key work-123 --json
+dev-sessions message wait msg_<id> --timeout 600
+dev-sessions message reply msg_<id> "Callback result"
+```
+
+Do not automatically retry a `delivery_uncertain` message. Inspect it and make an
+explicit retry or cancel decision.
+
+Idle registry entries retire automatically after 48 hours. The backend task or
+thread remains the source of history. Resume it with `dev-sessions resume <task-id>`.
+
+For scheduled work, install the gateway daemon on the machine that must continue
+while the controller is offline:
+
+```bash
+dev-sessions gateway install
+dev-sessions schedule create --name "Mayor wake" --cron "0 * * * *" \
+  --session "$sid" --message "Review waiting work."
+dev-sessions schedule create --name "nightly" --cron "0 2 * * *" \
+  --new-session --cli codex --path /repo --message "Run the audit."
 ```
 
 ## Remote hosts

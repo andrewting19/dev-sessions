@@ -1,5 +1,12 @@
 import { SessionCli, SessionTurn, StoredSession } from '../types';
-import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
+import {
+  Backend,
+  BackendCreateOptions,
+  BackendCreateResult,
+  BackendResumeOptions,
+  BackendStatusResult,
+  BackendWaitResult
+} from './backend';
 import { GrokAppServerBackend } from './grok-appserver';
 
 export class GrokBackend implements Backend {
@@ -23,6 +30,23 @@ export class GrokBackend implements Backend {
       grokTurnInProgress: false,
       lastAssistantMessages: []
     };
+  }
+
+  async resume(options: BackendResumeOptions): Promise<BackendCreateResult> {
+    const resumed = await this.raw.resumeSession(options.taskId, options.workspacePath, options.model);
+    return {
+      internalId: resumed.sessionId,
+      mode: 'native',
+      appServerPid: resumed.appServerPid,
+      appServerPort: resumed.appServerPort,
+      model: resumed.model,
+      grokTurnInProgress: false,
+      lastAssistantMessages: []
+    };
+  }
+
+  async retire(session: StoredSession): Promise<void> {
+    await this.kill(session);
   }
 
   preSendStoreFields(_session: StoredSession, sendTime: string): Partial<StoredSession> {

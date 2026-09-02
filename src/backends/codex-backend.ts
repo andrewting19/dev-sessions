@@ -1,5 +1,12 @@
 import { GoalUpdate, SessionCli, SessionTurn, StoredSession, ThreadGoal } from '../types';
-import { Backend, BackendCreateOptions, BackendCreateResult, BackendStatusResult, BackendWaitResult } from './backend';
+import {
+  Backend,
+  BackendCreateOptions,
+  BackendCreateResult,
+  BackendResumeOptions,
+  BackendStatusResult,
+  BackendWaitResult
+} from './backend';
 import { CodexAppServerBackend } from './codex-appserver';
 
 export class CodexBackend implements Backend {
@@ -23,6 +30,29 @@ export class CodexBackend implements Backend {
       codexTurnInProgress: false,
       lastAssistantMessages: []
     };
+  }
+
+  async resume(options: BackendResumeOptions): Promise<BackendCreateResult> {
+    const resumed = await this.raw.resumeSession(
+      options.championId,
+      options.taskId,
+      options.workspacePath,
+      options.model
+    );
+    return {
+      internalId: resumed.threadId,
+      mode: 'native',
+      appServerPid: resumed.appServerPid,
+      appServerPort: resumed.appServerPort,
+      model: resumed.model,
+      codexTurnInProgress: false,
+      lastAssistantMessages: []
+    };
+  }
+
+  async retire(_session: StoredSession): Promise<void> {
+    // A Codex thread is the durable source. Remove only the active registry
+    // pointer so resume can reconnect to the same thread ID later.
   }
 
   preSendStoreFields(_session: StoredSession, sendTime: string): Partial<StoredSession> {

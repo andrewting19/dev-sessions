@@ -28,6 +28,7 @@ interface FakeRemote {
   client: RemoteHostClient;
   version: ReturnType<typeof vi.fn>;
   create: ReturnType<typeof vi.fn>;
+  resume: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
@@ -36,6 +37,8 @@ interface FakeRemote {
   waitGoal: ReturnType<typeof vi.fn>;
   getGoal: ReturnType<typeof vi.fn>;
   inspect: ReturnType<typeof vi.fn>;
+  messages: ReturnType<typeof vi.fn>;
+  createSchedule: ReturnType<typeof vi.fn>;
 }
 
 function createFakeRemote(): FakeRemote {
@@ -43,6 +46,12 @@ function createFakeRemote(): FakeRemote {
     version: vi.fn().mockResolvedValue('0.4.0'),
     create: vi.fn(async (options: { championId: string }) =>
       mockSession(options.championId, { path: '/home/remote/project' })
+    ),
+    resume: vi.fn(async (options: { taskId: string; championId?: string }) =>
+      mockSession(options.championId ?? 'resumed-mid', {
+        internalId: options.taskId,
+        path: '/home/remote/project'
+      })
     ),
     send: vi.fn().mockResolvedValue(undefined),
     kill: vi.fn().mockResolvedValue(undefined),
@@ -56,7 +65,19 @@ function createFakeRemote(): FakeRemote {
     clearGoal: vi.fn().mockResolvedValue(true),
     lastMessages: vi.fn().mockResolvedValue(['remote says hi']),
     logs: vi.fn().mockResolvedValue([]),
-    inspect: vi.fn(async () => mockSession('fizz-top', { path: '/home/remote/project' }))
+    inspect: vi.fn(async () => mockSession('fizz-top', { path: '/home/remote/project' })),
+    messages: vi.fn().mockResolvedValue([{
+      id: 'msg-1', targetSessionId: 'mayor-mid', correlationId: 'msg-1', sequence: 1,
+      body: 'work', status: 'waiting', attempts: 0, availableAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
+    }]),
+    createSchedule: vi.fn().mockResolvedValue({
+      id: 'sch-1', name: 'remote audit', status: 'active', targetKind: 'new-session',
+      newSession: { path: '/repo', cli: 'codex', mode: 'native' }, message: 'audit',
+      cron: '0 * * * *', timezone: 'UTC', misfirePolicy: 'latest', overlapPolicy: 'skip',
+      maxLatenessMs: 3_600_000, nextRunAt: '2026-01-01T01:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
+    })
   };
 
   return { client: fns as unknown as RemoteHostClient, ...fns } as FakeRemote;
@@ -151,6 +172,15 @@ describe('RoutingSessionManager', () => {
     expect(warnings).toHaveLength(0);
   });
 
+  it('resumes a remote backend task and stores its new active pointer', async () => {
+    const session = await manager.resumeTask({ taskId: 'thread-123', host: 'buildbox', championId: 'mayor-mid' });
+
+    expect(session).toMatchObject({
+      championId: 'mayor-mid', internalId: 'thread-123', host: 'buildbox'
+    });
+    expect(await store.getSession('mayor-mid')).toMatchObject({ internalId: 'thread-123', host: 'buildbox' });
+  });
+
   it('warns when the remote version is incompatible but continues', async () => {
     remote.version.mockResolvedValue('0.1.0');
     await createRemoteSession();
@@ -194,6 +224,21 @@ describe('RoutingSessionManager', () => {
     expect(await manager.getLastAssistantTextBlocks(session.championId, 1)).toEqual(['remote says hi']);
     expect(remote.status).toHaveBeenCalledWith(session.championId);
     expect(local.getSessionStatus).not.toHaveBeenCalled();
+  });
+
+  it('stores new-task schedules and lists messages on a selected remote host', async () => {
+    const schedule = await manager.createSchedule({
+      host: 'buildbox', name: 'remote audit',
+      newSession: { path: '/repo', cli: 'codex', mode: 'native' },
+      message: 'audit', cron: '0 * * * *', timezone: 'UTC'
+    });
+    const messages = await manager.listQueuedMessages(undefined, undefined, 100, 'buildbox');
+
+    expect(schedule.id).toBe('buildbox::sch-1');
+    expect(messages[0]).toMatchObject({
+      id: 'buildbox::msg-1', correlationId: 'buildbox::msg-1'
+    });
+    expect(remote.createSchedule).toHaveBeenCalledWith(expect.objectContaining({ host: undefined }));
   });
 
   it('falls through to the local manager for unknown IDs', async () => {

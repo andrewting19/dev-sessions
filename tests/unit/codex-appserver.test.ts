@@ -181,6 +181,21 @@ describe('CodexAppServerBackend', () => {
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/start']);
   });
 
+  it('resumes an existing thread without starting a turn', async () => {
+    const { backend, clients } = createHarness([{
+      onRequest: (method, params) => {
+        expect(method).toBe('thread/resume');
+        expect(params).toMatchObject({ threadId: 'thr_existing', cwd: '/tmp/workspace' });
+        return { thread: { id: 'thr_existing' } };
+      }
+    }]);
+
+    const resumed = await backend.resumeSession('fizz-top', 'thr_existing', '/tmp/workspace');
+
+    expect(resumed.threadId).toBe('thr_existing');
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
+  });
+
   it('resumes a thread and fires turn/start without blocking on completion', async () => {
     const { backend, clients } = createHarness([
       {

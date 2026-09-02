@@ -25,6 +25,12 @@ function rawBackend(overrides: Partial<Record<keyof GrokAppServerBackend, unknow
       appServerPid: 42,
       appServerPort: 2419
     }),
+    resumeSession: vi.fn().mockResolvedValue({
+      sessionId: 'grok-session-existing',
+      model: 'grok-4.6',
+      appServerPid: 42,
+      appServerPort: 2419
+    }),
     sendMessage: vi.fn().mockResolvedValue({
       promptId: 'prompt-1',
       appServerPid: 42,
@@ -65,6 +71,20 @@ describe('GrokBackend', () => {
       appServerPort: 2419,
       grokTurnInProgress: false
     });
+  });
+
+  it('resumes a Grok task by its session ID', async () => {
+    const raw = rawBackend();
+    const backend = new GrokBackend(raw);
+
+    const resumed = await backend.resume({
+      taskId: 'grok-session-existing',
+      championId: 'garen-top',
+      workspacePath: '/repo'
+    });
+
+    expect(raw.resumeSession).toHaveBeenCalledWith('grok-session-existing', '/repo', undefined);
+    expect(resumed.internalId).toBe('grok-session-existing');
   });
 
   it('tracks an exact prompt ID from non-blocking send through wait', async () => {

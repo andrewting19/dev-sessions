@@ -1271,6 +1271,32 @@ export class CodexAppServerBackend {
     };
   }
 
+  async resumeSession(
+    championId: string,
+    threadId: string,
+    workspacePath: string,
+    model?: string
+  ): Promise<CodexSessionCreateResult> {
+    const normalizedThreadId = this.requireThreadId(threadId, 'resume a session');
+    const { server } = await this.withConnectedClient(async (client) => {
+      await client.request('thread/resume', {
+        threadId: normalizedThreadId,
+        cwd: workspacePath,
+        ...(model ? { model } : {}),
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        persistExtendedHistory: true
+      });
+    });
+    this.ensureSessionState(championId);
+    return {
+      threadId: normalizedThreadId,
+      model,
+      appServerPid: server.pid,
+      appServerPort: server.port
+    };
+  }
+
   async sendMessage(
     championId: string,
     threadId: string,

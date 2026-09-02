@@ -25,6 +25,7 @@ interface CreateCall {
 
 class FakeClaudeBackend extends ClaudeTmuxBackend {
   readonly createCalls: CreateCall[] = [];
+  readonly resumeCalls: CreateCall[] = [];
   readonly sendCalls: Array<{ tmuxSessionName: string; message: string }> = [];
   readonly killCalls: string[] = [];
   private readonly liveSessions = new Set<string>();
@@ -53,6 +54,16 @@ class FakeClaudeBackend extends ClaudeTmuxBackend {
       tmuxSessionName,
       message
     });
+  }
+
+  override async resumeSession(
+    tmuxSessionName: string,
+    workspacePath: string,
+    mode: SessionMode,
+    sessionUuid: string
+  ): Promise<void> {
+    this.resumeCalls.push({ tmuxSessionName, workspacePath, mode, sessionUuid });
+    this.liveSessions.add(tmuxSessionName);
   }
 
   override async killSession(tmuxSessionName: string): Promise<void> {
@@ -287,6 +298,25 @@ describe('SessionManager', () => {
       mode: 'native',
       sessionUuid: session.internalId
     });
+  });
+
+  it('registers a resumed task under a new session ID', async () => {
+    const resumed = await manager.resumeSession({
+      taskId: 'existing-task-id',
+      path: '/tmp/project',
+      cli: 'claude',
+      mode: 'native',
+      championId: 'mayor-mid'
+    });
+
+    expect(resumed).toMatchObject({ championId: 'mayor-mid', internalId: 'existing-task-id' });
+    expect(backend.resumeCalls).toEqual([{
+      tmuxSessionName: 'dev-mayor-mid',
+      workspacePath: '/tmp/project',
+      mode: 'native',
+      sessionUuid: 'existing-task-id'
+    }]);
+    expect(await store.getSession('mayor-mid')).toMatchObject({ internalId: 'existing-task-id' });
   });
 
   it('fails fast when the workspace path does not exist', async () => {
@@ -832,6 +862,25 @@ describe('SessionManager', () => {
     expect(listed.map((s) => s.championId)).toContain(session.championId);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(session.championId));
     warnSpy.mockRestore();
+  });
+
+  it('limits concurrent liveness checks for a large session registry', async () => {
+    for (let index = 0; index < 20; index += 1) {
+      await manager.createSession({ path: tmpDir, championId: `worker-${index}` });
+    }
+    let active = 0;
+    let maximum = 0;
+    vi.spyOn(backend, 'sessionExists').mockImplementation(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return 'alive';
+    });
+
+    expect(await manager.listSessions()).toHaveLength(20);
+    expect(maximum).toBeGreaterThan(1);
+    expect(maximum).toBeLessThanOrEqual(8);
   });
 
   it('throws session-not-found errors for unknown IDs', async () => {

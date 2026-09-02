@@ -42,7 +42,24 @@ function createManagerMock(): SessionManagerLike {
       timedOut: false,
       elapsedMs: 1000
     }),
-    waitForSessionNextTurn: vi.fn().mockResolvedValue({ completed: true, timedOut: false, elapsedMs: 500 })
+    waitForSessionNextTurn: vi.fn().mockResolvedValue({ completed: true, timedOut: false, elapsedMs: 500 }),
+    resumeTask: vi.fn().mockResolvedValue(createMockSession('resumed-mid')),
+    listQueuedMessages: vi.fn().mockResolvedValue([]),
+    getQueuedMessage: vi.fn().mockResolvedValue(undefined),
+    waitForQueuedMessage: vi.fn(),
+    cancelQueuedMessage: vi.fn(),
+    retryQueuedMessage: vi.fn(),
+    replyToQueuedMessage: vi.fn(),
+    createSchedule: vi.fn(),
+    listSchedules: vi.fn().mockResolvedValue([]),
+    getSchedule: vi.fn().mockResolvedValue(undefined),
+    pauseSchedule: vi.fn(),
+    resumeSchedule: vi.fn(),
+    deleteSchedule: vi.fn(),
+    runScheduleNow: vi.fn(),
+    listScheduleRuns: vi.fn().mockResolvedValue([]),
+    getScheduleRun: vi.fn().mockResolvedValue(undefined),
+    runAutomationTick: vi.fn().mockResolvedValue(undefined)
   };
 }
 
@@ -255,6 +272,63 @@ describe('CLI argument parsing', () => {
       mode: 'native',
       description: undefined
     });
+  });
+
+  it('resumes a backend task by task ID', async () => {
+    const manager = createManagerMock();
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync([
+      'node', 'dev-sessions', 'resume', 'thread-123', '--cli', 'codex', '--path', '/tmp/project', '--id', 'mayor-mid'
+    ]);
+
+    expect(manager.resumeTask).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'thread-123', cli: 'codex', path: '/tmp/project', championId: 'mayor-mid'
+    }));
+  });
+
+  it('passes message idempotency and correlation options', async () => {
+    const manager = createManagerMock();
+    (manager.sendMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'msg-1', targetSessionId: 'mayor-mid', sourceSessionId: 'worker-jg',
+      correlationId: 'msg-1', sequence: 1, body: 'work', status: 'waiting', attempts: 0,
+      availableAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    const { io, output } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync([
+      'node', 'dev-sessions', 'send', 'mayor-mid', '--from', 'worker-jg',
+      '--idempotency-key', 'case-1', '--json', '--', 'work'
+    ]);
+
+    expect(manager.sendMessage).toHaveBeenCalledWith('mayor-mid', 'work', {
+      sourceSessionId: 'worker-jg', idempotencyKey: 'case-1', replyToMessageId: undefined
+    });
+    expect(JSON.parse(output.stdout)).toMatchObject({ id: 'msg-1', status: 'waiting' });
+  });
+
+  it('keeps a remote new-session schedule path relative to the remote host', async () => {
+    const manager = createManagerMock();
+    (manager.createSchedule as ReturnType<typeof vi.fn>).mockImplementation(async (options) => ({
+      ...options, id: 'sch-1', status: 'active', targetKind: 'new-session',
+      timezone: 'UTC', misfirePolicy: 'latest', overlapPolicy: 'skip', maxLatenessMs: 3_600_000,
+      nextRunAt: '2026-01-01T01:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    }));
+    const { io } = createIoCapture();
+    const program = buildProgram(manager, io);
+
+    await program.parseAsync([
+      'node', 'dev-sessions', 'schedule', 'create', '--name', 'remote worker', '--cron', '0 * * * *',
+      '--new-session', '--host', 'buildbox', '--path', 'repo', '--message', 'work'
+    ]);
+
+    expect(manager.createSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'buildbox', newSession: expect.objectContaining({ path: 'repo' })
+    }));
   });
 
   it('parses send command with inline message', async () => {

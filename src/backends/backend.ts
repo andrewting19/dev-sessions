@@ -19,6 +19,10 @@ export interface BackendCreateResult {
   lastAssistantMessages?: string[];
 }
 
+export interface BackendResumeOptions extends BackendCreateOptions {
+  taskId: string;
+}
+
 export interface BackendStatusResult {
   status: AgentTurnStatus;
   storeUpdate?: Partial<StoredSession>;
@@ -35,6 +39,7 @@ export interface Backend {
   readonly deadSessionPolicy: 'prune' | 'deactivate';
   isChampionIdTaken(championId: string): Promise<boolean>;
   create(options: BackendCreateOptions): Promise<BackendCreateResult>;
+  resume(options: BackendResumeOptions): Promise<BackendCreateResult>;
   preSendStoreFields(session: StoredSession, sendTime: string): Partial<StoredSession> | Promise<Partial<StoredSession>>;
   send(session: StoredSession, message: string): Promise<Partial<StoredSession>>;
   onSendError(session: StoredSession, error: Error): Partial<StoredSession>;
@@ -44,6 +49,7 @@ export interface Backend {
   getLastMessages(session: StoredSession, count: number): Promise<string[]>;
   getLogs(session: StoredSession): Promise<SessionTurn[]>;
   kill(session: StoredSession): Promise<void>;
+  retire?(session: StoredSession): Promise<void>;
   afterKill(remainingActiveSessions: StoredSession[]): Promise<void>;
   // Goal support (codex only). Backends that don't implement these are reported
   // as unsupported by the session manager.

@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   LAUNCHD_LABEL,
@@ -7,7 +10,8 @@ import {
   getGatewayDaemonStatus,
   getGatewayLogPath,
   getLaunchdPlistPath,
-  getSystemdUnitPath
+  getSystemdUnitPath,
+  installGatewayDaemon
 } from '../../src/gateway/daemon';
 
 vi.mock('node:child_process', () => ({
@@ -15,6 +19,32 @@ vi.mock('node:child_process', () => ({
 }));
 
 describe('gateway daemon template helpers', () => {
+  it('enables Linux user lingering before it starts the gateway service', async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'dev-sessions-daemon-'));
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const { execFile } = await import('node:child_process');
+    vi.mocked(execFile).mockImplementation((command, args, callback: any) => {
+      calls.push({ command: String(command), args: [...(args ?? [])].map(String) });
+      callback(null, '', '');
+      return {} as any;
+    });
+    try {
+      await installGatewayDaemon({
+        platform: 'linux',
+        homeDir: temp,
+        binaryPath: '/usr/local/bin/dev-sessions',
+        nodePath: '/usr/local/bin/node',
+        userPath: '/usr/local/bin:/usr/bin'
+      });
+      const linger = calls.findIndex((call) => call.command === 'loginctl');
+      const enable = calls.findIndex((call) => call.command === 'systemctl' && call.args.includes('enable'));
+      expect(calls[linger]).toMatchObject({ args: ['enable-linger'] });
+      expect(linger).toBeLessThan(enable);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   describe('getLaunchdPlistPath', () => {
     it('returns path under Library/LaunchAgents with the correct label', () => {
       const result = getLaunchdPlistPath('/Users/test');

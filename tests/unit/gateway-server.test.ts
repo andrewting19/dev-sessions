@@ -206,7 +206,7 @@ describe('gateway server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--file', '/tmp/brief.md']);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--json', '--file', '/tmp/brief.md']);
   });
 
   it('sends inline messages when message is provided', async () => {
@@ -226,7 +226,7 @@ describe('gateway server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--', 'run tests']);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--json', '--', 'run tests']);
   });
 
   it('passes multiline messages starting with a dash through send unmangled', async () => {
@@ -247,7 +247,52 @@ describe('gateway server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--', message]);
+    expect(executeCommand).toHaveBeenCalledWith(['send', 'fizz-top', '--json', '--', message]);
+  });
+
+  it('relays durable message metadata and task resume', async () => {
+    const queued = {
+      id: 'msg-1',
+      targetSessionId: 'mayor-mid',
+      correlationId: 'msg-1',
+      sequence: 1,
+      body: 'work',
+      status: 'waiting',
+      attempts: 0,
+      availableAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    };
+    const session = {
+      championId: 'mayor-mid', internalId: 'task-1', cli: 'codex', mode: 'native',
+      path: '/repo', status: 'active', createdAt: queued.createdAt, lastUsed: queued.createdAt
+    };
+    const executeCommand = vi.fn<GatewayCommandExecutor>(async (args) => {
+      if (args[0] === 'send') return createCommandResult(args, JSON.stringify(queued));
+      if (args[0] === 'resume') return createCommandResult(args, JSON.stringify(session));
+      throw new Error(`Unexpected command: ${args.join(' ')}`);
+    });
+    const server = await startGatewayTestServer(executeCommand);
+    closers.push(server.close);
+
+    const send = await fetch(`${server.baseUrl}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'mayor-mid', message: 'work', sourceSessionId: 'worker-jg', idempotencyKey: 'case-1'
+      })
+    });
+    expect(await send.json()).toMatchObject({ message: { id: 'msg-1', status: 'waiting' } });
+    expect(executeCommand).toHaveBeenCalledWith([
+      'send', 'mayor-mid', '--json', '--from', 'worker-jg', '--idempotency-key', 'case-1', '--', 'work'
+    ]);
+
+    const resume = await fetch(`${server.baseUrl}/resume`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId: 'task-1', cli: 'codex', path: '/repo' })
+    });
+    expect(await resume.json()).toMatchObject({ session: { internalId: 'task-1' } });
   });
 
   it('relays list, status, and kill routes to the CLI', async () => {
