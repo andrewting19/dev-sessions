@@ -82,6 +82,7 @@
 - [x] Real Codex E2E uses isolated session, automation, daemon-state, and daemon-log paths and archives its test thread during cleanup
 - [x] Real E2E verified: Grok 4.6 create→first turn→kill→resume by task ID→second turn
 - [x] Real E2E verified: scheduled Codex work records the exact scheduled-turn result, not a stale previous reply
+- [x] Codex schedule polling stores assistant output only after terminal completion, so partial replies do not create duplicate history entries
 - [x] Real remote E2E verified on Ubuntu over SSH: a temporary remote gateway completed a scheduled Codex tool turn after the control SSH connection ended
 - [x] Real E2E verified: Docker gateway relay
 

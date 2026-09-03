@@ -211,7 +211,7 @@ export class CodexBackend implements Backend {
     const completionTime = new Date().toISOString();
     const turnStillInProgress = waitResult.timedOut;
     const existingMessages = session.lastAssistantMessages ?? [];
-    const updatedMessages = waitResult.assistantText
+    const updatedMessages = waitResult.status === 'completed' && waitResult.assistantText
       ? [...existingMessages, waitResult.assistantText]
       : existingMessages;
     const postWaitUpdate: Partial<StoredSession> = {

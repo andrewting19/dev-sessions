@@ -263,6 +263,7 @@ describe('SessionManager', () => {
     await mkdir('/tmp/codex-history-fallback', { recursive: true });
     await mkdir('/tmp/codex-stale-last-message', { recursive: true });
     await mkdir('/tmp/codex-stale-wait', { recursive: true });
+    await mkdir('/tmp/codex-partial-wait', { recursive: true });
     await mkdir('/tmp/codex-live-recheck', { recursive: true });
     await mkdir('/tmp/codex-status-latch', { recursive: true });
     await mkdir('/tmp/claude-mixed', { recursive: true });
@@ -667,6 +668,34 @@ describe('SessionManager', () => {
     expect(stored?.codexTurnInProgress).toBe(false);
     expect(stored?.lastTurnStatus).toBe('completed');
     expect(stored?.lastTurnError).toBeUndefined();
+  });
+
+  it('does not save partial Codex output when an exact-turn wait times out', async () => {
+    const session = await manager.createSession({
+      cli: 'codex',
+      path: '/tmp/codex-partial-wait'
+    });
+    await store.updateSession(session.championId, {
+      codexTurnInProgress: true,
+      codexActiveTurnId: 'turn-partial',
+      lastAssistantMessages: []
+    });
+    codexBackend.nextWaitForThreadResult = {
+      completed: false,
+      timedOut: true,
+      elapsedMs: 50,
+      status: 'interrupted',
+      assistantText: 'partial progress text'
+    };
+
+    const result = await manager.waitForSession(session.championId, {
+      timeoutSeconds: 0.05,
+      intervalSeconds: 0.05
+    });
+
+    expect(result).toMatchObject({ completed: false, timedOut: true });
+    const stored = await store.getSession(session.championId);
+    expect(stored?.lastAssistantMessages).toEqual([]);
   });
 
   it('rechecks live Codex thread status on wait when the store says no turn is in progress', async () => {
