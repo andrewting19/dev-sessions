@@ -17,6 +17,7 @@
 - [x] `status` — infer idle/working/waiting_for_input (system-entry-aware)
 - [x] `wait` — system-entry-based turn detection (reliable after 3 iterations of fixes)
 - [x] `create` race fix — waits for a stable interactive prompt, confirms the explicit workspace trust screen, and fails with pane evidence if Claude exits or does not become ready
+- [x] Claude blank-start recovery — restarts one native Claude process that produces no tmux output for 15 seconds
 - [x] `send` acceptance check — confirms the new user entry in the Claude transcript and retries a lost Enter key before returning
 
 ### Phase 2b: Docker Gateway ✅

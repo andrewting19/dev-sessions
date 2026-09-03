@@ -92,7 +92,7 @@ describeIfReal('real Claude e2e', () => {
         {
           cwd: context.workspaceDir,
           env: isolatedCliEnv(context),
-          timeoutMs: 70_000
+          timeoutMs: 90_000
         }
       );
       expect(createResult.code, createResult.stderr).toBe(0);
@@ -156,7 +156,7 @@ describeIfReal('real Claude e2e', () => {
       const resumeResult = await runDevSessionsCli(['resume', taskId, '--quiet'], {
         cwd: context.workspaceDir,
         env: isolatedCliEnv(context),
-        timeoutMs: 70_000
+        timeoutMs: 90_000
       });
       expect(resumeResult.code, resumeResult.stderr).toBe(0);
       context.championId = resumeResult.stdout.trim();
@@ -197,7 +197,7 @@ describeIfReal('real Claude e2e', () => {
         {
           cwd: context.workspaceDir,
           env: isolatedCliEnv(context),
-          timeoutMs: 70_000
+          timeoutMs: 90_000
         }
       );
       expect(createResult.code, createResult.stderr).toBe(0);

@@ -241,7 +241,7 @@ describe('ClaudeTmuxBackend', () => {
       }
     );
 
-    const backend = new ClaudeTmuxBackend(500, 0);
+    const backend = new ClaudeTmuxBackend(500, 0, 1);
     const createPromise = backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-timeout');
     const assertion = expect(createPromise).rejects.toThrow('Timed out waiting for Claude to become ready');
 
@@ -251,6 +251,35 @@ describe('ClaudeTmuxBackend', () => {
     expect(execFileMock).toHaveBeenCalledWith(
       'tmux',
       ['kill-session', '-t', 'dev-riven-jg'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
+
+  it('restarts Claude once when the first process keeps a blank pane', async () => {
+    vi.useFakeTimers();
+    accessMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    let starts = 0;
+    execFileMock.mockImplementation(
+      (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+        if (args[0] === 'new-session') starts += 1;
+        const stdout = args[0] === 'capture-pane' && starts >= 2
+          ? 'Claude Code\n\n❯ \n\nbypass permissions on'
+          : '';
+        callback(null, { stdout, stderr: '' } as unknown as string, '');
+        return undefined;
+      }
+    );
+
+    const backend = new ClaudeTmuxBackend(1_000, 0, 2, 200);
+    const createPromise = backend.createSession('dev-retry-mid', '/tmp/workspace', 'native', 'uuid-retry');
+    await vi.advanceTimersByTimeAsync(400);
+    await createPromise;
+
+    expect(starts).toBe(2);
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      ['kill-session', '-t', 'dev-retry-mid'],
       expect.any(Object),
       expect.any(Function)
     );

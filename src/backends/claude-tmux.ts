@@ -13,10 +13,14 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+class ClaudeBlankStartupError extends Error {}
+
 export class ClaudeTmuxBackend {
   constructor(
     private readonly timeoutMs: number = 60_000,
-    private readonly readyStabilityMs: number = 750
+    private readonly readyStabilityMs: number = 750,
+    private readonly maxBlankStartupAttempts: number = 2,
+    private readonly blankStartupTimeoutMs: number = 15_000
   ) {}
 
   async createSession(
@@ -55,28 +59,36 @@ export class ClaudeTmuxBackend {
       }
     }
 
-    const startupCommand = this.buildStartupCommand(workspacePath, mode, sessionUuid, resume);
+    const attempts = mode === 'native' ? Math.max(1, this.maxBlankStartupAttempts) : 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const startupCommand = this.buildStartupCommand(workspacePath, mode, sessionUuid, resume);
 
-    await this.execTmux([
-      'new-session',
-      '-d',
-      '-s',
-      tmuxSessionName,
-      '-n',
-      tmuxSessionName,
-      'bash',
-      '-lc',
-      startupCommand
-    ]);
+      await this.execTmux([
+        'new-session',
+        '-d',
+        '-s',
+        tmuxSessionName,
+        '-n',
+        tmuxSessionName,
+        'bash',
+        '-lc',
+        startupCommand
+      ]);
 
-    if (mode === 'docker') {
-      await this.sleep(5000);
-      await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
-    } else {
+      if (mode === 'docker') {
+        await this.sleep(5000);
+        await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+        return;
+      }
+
       try {
         await this.waitForInteractiveReady(tmuxSessionName, workspacePath, sessionUuid);
+        return;
       } catch (error: unknown) {
         await this.killSession(tmuxSessionName).catch(() => undefined);
+        if (error instanceof ClaudeBlankStartupError && attempt < attempts - 1) {
+          continue;
+        }
         throw error;
       }
     }
@@ -218,6 +230,7 @@ export class ClaudeTmuxBackend {
     const timeoutOverride = parseInt(process.env['DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS'] ?? '');
     const timeoutMs = Number.isFinite(timeoutOverride) && timeoutOverride >= 0 ? timeoutOverride : this.timeoutMs;
     const deadline = Date.now() + timeoutMs;
+    const blankDeadline = Date.now() + Math.min(timeoutMs, this.blankStartupTimeoutMs);
     let promptReadySince: number | undefined;
     let trustConfirmed = false;
     let trustPromptReadySince: number | undefined;
@@ -262,7 +275,16 @@ export class ClaudeTmuxBackend {
           promptReadySince = undefined;
           trustPromptReadySince = undefined;
         }
+
+        if (pane.trim().length === 0 && Date.now() >= blankDeadline) {
+          throw new ClaudeBlankStartupError(
+            `Claude produced no terminal output in ${tmuxSessionName}`
+          );
+        }
       } catch (error: unknown) {
+        if (error instanceof ClaudeBlankStartupError) {
+          throw error;
+        }
         const liveness = await this.sessionExists(tmuxSessionName);
         if (liveness === 'dead') {
           const paneDetail = lastPane.trim().slice(-1_000);
