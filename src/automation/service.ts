@@ -27,6 +27,11 @@ export interface AutomationSessionRuntime {
   getSessionStatus(championId: string): Promise<AgentTurnStatus>;
   getLastAssistantTextBlocks(championId: string, count: number): Promise<string[]>;
   waitForSession(championId: string, options?: WaitOptions): Promise<{ completed: boolean; timedOut: boolean }>;
+  waitForDelivery?(
+    championId: string,
+    deliveryId: string,
+    options?: WaitOptions
+  ): Promise<{ completed: boolean; timedOut: boolean; result?: string }>;
   inspectSession(championId: string): Promise<StoredSession>;
   listSessions(): Promise<StoredSession[]>;
 }
@@ -278,13 +283,9 @@ export class AutomationService {
       }
 
       try {
-        const wait = await this.runtime.waitForSession(message.targetSessionId, {
-          timeoutSeconds: 0.05,
-          intervalSeconds: 0.05
-        });
+        const wait = await this.pollDeliveredMessage(message);
         if (!wait.completed) continue;
-        const result = (await this.runtime.getLastAssistantTextBlocks(message.targetSessionId, 1))[0];
-        this.store.markMessageTerminal(message.id, 'completed', { result }, this.now());
+        this.store.markMessageTerminal(message.id, 'completed', { result: wait.result }, this.now());
       } catch (error: unknown) {
         this.store.markMessageTerminal(message.id, 'failed', {
           error: error instanceof Error ? error.message : String(error)
@@ -305,15 +306,15 @@ export class AutomationService {
       deliveryAttempted = true;
       await this.runtime.sendMessageDirect(message.targetSessionId, message.body);
       const session = await this.runtime.inspectSession(message.targetSessionId);
-      this.store.markMessageDelivered(message.id, backendDeliveryId(session), this.now());
+      const delivered = this.store.markMessageDelivered(
+        message.id,
+        backendDeliveryId(session),
+        this.now()
+      );
 
-      const wait = await this.runtime.waitForSession(message.targetSessionId, {
-        timeoutSeconds: 0.05,
-        intervalSeconds: 0.05
-      });
+      const wait = await this.pollDeliveredMessage(delivered);
       if (wait.completed) {
-        const result = (await this.runtime.getLastAssistantTextBlocks(message.targetSessionId, 1))[0];
-        this.store.markMessageTerminal(message.id, 'completed', { result }, this.now());
+        this.store.markMessageTerminal(message.id, 'completed', { result: wait.result }, this.now());
       }
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -331,6 +332,26 @@ export class AutomationService {
       }
       this.store.markMessageDeliveryUncertain(message.id, detail, this.now());
     }
+  }
+
+  private async pollDeliveredMessage(
+    message: QueuedMessage
+  ): Promise<{ completed: boolean; result?: string }> {
+    const options = { timeoutSeconds: 0.05, intervalSeconds: 0.05 };
+    if (message.backendDeliveryId && this.runtime.waitForDelivery) {
+      const wait = await this.runtime.waitForDelivery(
+        message.targetSessionId,
+        message.backendDeliveryId,
+        options
+      );
+      return { completed: wait.completed, result: wait.result };
+    }
+
+    const wait = await this.runtime.waitForSession(message.targetSessionId, options);
+    const result = wait.completed
+      ? (await this.runtime.getLastAssistantTextBlocks(message.targetSessionId, 1))[0]
+      : undefined;
+    return { completed: wait.completed, result };
   }
 
   private async processDueSchedules(): Promise<void> {

@@ -6,6 +6,7 @@ import { StoredSession } from '../../src/types';
 vi.mock('../../src/transcript/claude-parser', () => ({
   getClaudeTranscriptPath: () => '/tmp/fake-transcript.jsonl',
   readClaudeTranscript: vi.fn().mockResolvedValue([]),
+  countHumanMessages: vi.fn().mockReturnValue(0),
   countSystemEntries: vi.fn().mockReturnValue(0),
   extractTextBlocks: vi.fn().mockReturnValue([]),
   getAssistantTextBlocks: vi.fn().mockReturnValue([]),
@@ -76,5 +77,43 @@ describe('ClaudeBackend.wait', () => {
     expect(result.completed).toBe(false);
     expect(result.timedOut).toBe(true);
     expect(result.errorToThrow).toBeUndefined();
+  });
+});
+
+describe('ClaudeBackend.send', () => {
+  it('returns after Claude records the new user message', async () => {
+    const raw = new ClaudeTmuxBackend();
+    vi.spyOn(raw, 'sendMessage').mockResolvedValue(undefined);
+    const { countHumanMessages } = await import('../../src/transcript/claude-parser');
+    (countHumanMessages as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(1);
+
+    const backend = new ClaudeBackend(raw);
+    await expect(backend.send(makeSession(), 'hello')).resolves.toEqual(
+      expect.objectContaining({ status: 'active' })
+    );
+  });
+
+  it('submits again when Claude does not record the first Enter key', async () => {
+    vi.useFakeTimers();
+    const raw = new ClaudeTmuxBackend();
+    vi.spyOn(raw, 'sendMessage').mockResolvedValue(undefined);
+    vi.spyOn(raw, 'sessionExists').mockResolvedValue('alive');
+    const submit = vi.spyOn(raw, 'submitMessage').mockResolvedValue(undefined);
+    const { countHumanMessages } = await import('../../src/transcript/claude-parser');
+    let calls = 0;
+    (countHumanMessages as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      calls += 1;
+      return calls >= 22 ? 1 : 0;
+    });
+
+    const backend = new ClaudeBackend(raw);
+    const send = backend.send(makeSession(), 'hello');
+    await vi.advanceTimersByTimeAsync(2_200);
+    await send;
+
+    expect(submit).toHaveBeenCalledWith('dev-fizz-top');
+    vi.useRealTimers();
   });
 });

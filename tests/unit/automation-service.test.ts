@@ -14,6 +14,7 @@ class FakeRuntime implements AutomationSessionRuntime {
   readonly retired: string[] = [];
   readonly resumed: string[] = [];
   result = 'RESULT';
+  deliveryResult = 'DELIVERY_RESULT';
   nextId = 1;
   sendError?: Error;
   statusError?: Error;
@@ -65,6 +66,18 @@ class FakeRuntime implements AutomationSessionRuntime {
   async waitForSession(championId: string): Promise<{ completed: boolean; timedOut: boolean }> {
     const status = await this.getSessionStatus(championId);
     return { completed: status === 'idle', timedOut: status !== 'idle' };
+  }
+
+  async waitForDelivery(
+    championId: string,
+    _deliveryId: string
+  ): Promise<{ completed: boolean; timedOut: boolean; result?: string }> {
+    const status = await this.getSessionStatus(championId);
+    return {
+      completed: status === 'idle',
+      timedOut: status !== 'idle',
+      result: status === 'idle' ? this.deliveryResult : undefined
+    };
   }
 
   async inspectSession(championId: string): Promise<StoredSession> {
@@ -136,7 +149,7 @@ describe('AutomationService', () => {
     now = new Date(now.getTime() + 2_000);
     await service.tick();
     expect(service.getMessage(first.id)?.status).toBe('completed');
-    expect(service.getMessage(first.id)?.result).toBe('RESULT');
+    expect(service.getMessage(first.id)?.result).toBe('DELIVERY_RESULT');
     expect(runtime.sent.map((entry) => entry.body)).toEqual(['first', 'second']);
   });
 

@@ -113,10 +113,11 @@ type SpawnCodexDaemonProcess = (args: string[], options: Parameters<typeof spawn
 const DEFAULT_TIMEOUT_MS = 300_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const STARTUP_TIMEOUT_MS = 15_000;
+const SHUTDOWN_TIMEOUT_MS = 5_000;
 const PORT_POLL_INTERVAL_MS = 100;
 const CLOSE_TIMEOUT_MS = 500;
 const STATE_FILE_VERSION = 1;
-const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not found/i;
+const RESUME_NOT_FOUND_PATTERN = /no rollout found|thread not (?:found|loaded)|unknown thread/i;
 const THREAD_READ_UNMATERIALIZED_PATTERN = /includeTurns is unavailable before first user message/i;
 const THREAD_READ_NOT_FOUND_PATTERN = /thread not loaded|thread not found|no rollout found|unknown thread/i;
 const APP_SERVER_URL_PATTERN = /ws:\/\/127\.0\.0\.1:(\d+)/i;
@@ -147,10 +148,18 @@ function defaultSpawnCodexDaemon(args: string[], options: Parameters<typeof spaw
 }
 
 function getDaemonStateFilePath(): string {
+  const configured = process.env.DEV_SESSIONS_CODEX_DAEMON_STATE_PATH;
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
   return path.join(os.homedir(), '.dev-sessions', 'codex-appserver.json');
 }
 
 function getDaemonLogFilePath(): string {
+  const configured = process.env.DEV_SESSIONS_CODEX_DAEMON_LOG_PATH;
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
   return path.join(os.homedir(), '.dev-sessions', 'codex-appserver.log');
 }
 
@@ -316,6 +325,14 @@ export class DefaultCodexAppServerDaemonManager implements CodexAppServerDaemonM
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
         throw error;
       }
+    }
+
+    const shutdownDeadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+    while (isProcessRunning(target.pid) && Date.now() < shutdownDeadline) {
+      await sleep(PORT_POLL_INTERVAL_MS);
+    }
+    if (isProcessRunning(target.pid)) {
+      throw new Error(`Timed out waiting for Codex app-server pid ${target.pid} to stop`);
     }
 
     await this.deleteStateFile();
@@ -1312,23 +1329,41 @@ export class CodexAppServerBackend {
 
     const { server, result: activeThreadId } = await this.withConnectedClient(async (client) => {
       let tid = threadId.trim();
+      let turnStartResult: unknown;
 
       if (tid.length > 0) {
         try {
-          await client.request('thread/resume', {
+          // A new empty thread is loaded in the shared daemon but has no rollout
+          // file. thread/resume rejects it. Start its first turn directly so the
+          // ID returned by create remains the durable thread ID.
+          turnStartResult = await client.request('turn/start', {
             threadId: tid,
-            cwd: options.workspacePath,
-            ...(model ? { model } : {}),
-            approvalPolicy: 'never',
-            sandbox: 'danger-full-access',
-            persistExtendedHistory: true
+            input: [{ type: 'text', text: message }]
           });
         } catch (error: unknown) {
           if (!this.isResumeNotFoundError(error)) {
             throw error;
           }
 
-          tid = '';
+          try {
+            await client.request('thread/resume', {
+              threadId: tid,
+              cwd: options.workspacePath,
+              ...(model ? { model } : {}),
+              approvalPolicy: 'never',
+              sandbox: 'danger-full-access',
+              persistExtendedHistory: true
+            });
+            turnStartResult = await client.request('turn/start', {
+              threadId: tid,
+              input: [{ type: 'text', text: message }]
+            });
+          } catch (resumeError: unknown) {
+            if (!this.isResumeNotFoundError(resumeError)) {
+              throw resumeError;
+            }
+            tid = '';
+          }
         }
       }
 
@@ -1343,12 +1378,12 @@ export class CodexAppServerBackend {
           experimentalRawEvents: false
         });
         tid = extractThreadId(threadResult);
+        turnStartResult = await client.request('turn/start', {
+          threadId: tid,
+          input: [{ type: 'text', text: message }]
+        });
       }
 
-      const turnStartResult = await client.request('turn/start', {
-        threadId: tid,
-        input: [{ type: 'text', text: message }]
-      });
       const startedTurnId = extractStartedTurnId(turnStartResult);
 
       // Best-effort: wait a short time for the turn to complete on this connection.

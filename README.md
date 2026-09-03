@@ -149,6 +149,11 @@ Automatic cleanup retires idle active-session records after 48 hours. It does
 not delete backend transcripts or threads. Set `DEV_SESSIONS_AUTO_CLEANUP_HOURS`
 to a different number. Set it to `0` to disable automatic cleanup.
 Set `DEV_SESSIONS_STATE_PATH` only when a separate automation database is needed.
+Set `DEV_SESSIONS_STORE_PATH` only when a separate active-session registry is
+needed, such as for an isolated E2E test.
+Set `DEV_SESSIONS_CODEX_DAEMON_STATE_PATH` and
+`DEV_SESSIONS_CODEX_DAEMON_LOG_PATH` only when an isolated Codex daemon is
+needed for an E2E test.
 
 ### Schedules
 
@@ -299,7 +304,7 @@ permissions.
 | `last-message <id>` | Get last N assistant messages (`-n` count, `--json` for a lossless block array) |
 | `status <id>` | Get session status: `idle`, `working`, or `waiting_for_input` |
 | `list` | List all active sessions with their host (`--json` for machine-readable output) |
-| `kill <id>` | Terminate a session and clean up (`--all` for every session, `--older-than 7d|72h|30m` for stale ones) |
+| `kill <id>` | Retire the active pointer and stop its live runtime when required; keep the backend task for `resume` (`--all` and `--older-than` are supported) |
 | `gateway` | Start the Docker relay gateway HTTP server (`--port`) |
 | `gateway install` | Install gateway as system daemon (launchd on macOS, systemd on Linux) |
 | `gateway uninstall` | Remove gateway daemon |
@@ -355,7 +360,8 @@ CLI warns on mismatch at create time), key-based ssh auth (`BatchMode=yes`; no
 prompts, no secrets in argv — auth is entirely ssh config's business). Remote
 commands run via `bash -lc` so login-shell PATH additions (npm globals, nvm)
 apply; if the binary still isn't found, set `DEV_SESSIONS_REMOTE_BIN` to its
-absolute path before `create --host` (it's remembered per session).
+absolute path before `create --host` (it is remembered for that host, even after
+session cleanup, and reused for message, schedule, and run commands).
 
 **Durability:** the session, message worker, schedules, and any `/goal` driver run
 entirely on the remote host. Install `dev-sessions gateway` there as a system

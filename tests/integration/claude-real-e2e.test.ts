@@ -35,7 +35,16 @@ const describeIfReal = RUN_REAL && TMUX_AVAILABLE && CLAUDE_AVAILABLE
 
 interface RealE2EContext {
   workspaceDir: string;
+  stateDir: string;
   championId: string | null;
+}
+
+function isolatedCliEnv(context: RealE2EContext): NodeJS.ProcessEnv {
+  return {
+    DEV_SESSIONS_STATE_PATH: path.join(context.stateDir, 'state.sqlite'),
+    DEV_SESSIONS_STORE_PATH: path.join(context.stateDir, '.dev-sessions', 'sessions.json'),
+    DEV_SESSIONS_AUTO_CLEANUP_HOURS: '0'
+  };
 }
 
 describeIfReal('real Claude e2e', () => {
@@ -46,12 +55,13 @@ describeIfReal('real Claude e2e', () => {
     // On macOS, os.tmpdir() returns /var/folders/... which resolves to /private/var/folders/...
     const rawDir = await mkdtemp(path.join(os.tmpdir(), 'dev-sessions-real-e2e-'));
     const workspaceDir = await realpath(rawDir);
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'dev-sessions-real-state-'));
     await mkdir(workspaceDir, { recursive: true });
-    context = { workspaceDir, championId: null };
+    context = { workspaceDir, stateDir, championId: null };
   });
 
   afterEach(async () => {
-    const { workspaceDir, championId } = context;
+    const { workspaceDir, stateDir, championId } = context;
 
     // Kill tmux session if one was created
     if (championId) {
@@ -61,6 +71,7 @@ describeIfReal('real Claude e2e', () => {
 
     // Remove workspace temp dir
     await rm(workspaceDir, { recursive: true, force: true });
+    await rm(stateDir, { recursive: true, force: true });
 
     // Remove Claude transcript directory for this workspace from the real home dir
     const transcriptProjectDir = path.join(
@@ -78,17 +89,22 @@ describeIfReal('real Claude e2e', () => {
       // Create session
       const createResult = await runDevSessionsCli(
         ['create', '--path', context.workspaceDir, '--mode', 'native', '--quiet'],
-        { cwd: context.workspaceDir }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 70_000
+        }
       );
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
       const championId = createResult.stdout.trim();
       expect(championId.length).toBeGreaterThan(0);
       context.championId = championId;
 
       // Verify it's in the store
-      const sessions = await readStoreSessions(os.homedir());
+      const sessions = await readStoreSessions(context.stateDir);
       const session = sessions.find((s) => s.championId === championId);
       expect(session).toBeDefined();
+      const taskId = session!.internalId;
 
       // Send a deterministic prompt
       const sendResult = await runDevSessionsCli(
@@ -97,32 +113,80 @@ describeIfReal('real Claude e2e', () => {
           championId,
           'Reply with exactly one word: PONG. No explanation, no punctuation, just the word PONG.'
         ],
-        { cwd: context.workspaceDir }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 70_000
+        }
       );
-      expect(sendResult.code).toBe(0);
+      expect(sendResult.code, sendResult.stderr).toBe(0);
 
       // Wait for turn completion
       const waitResult = await runDevSessionsCli(
         ['wait', championId, '--timeout', '90'],
-        { cwd: context.workspaceDir, timeoutMs: 100_000 }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 100_000
+        }
       );
-      expect(waitResult.code).toBe(0);
+      expect(waitResult.code, waitResult.stderr).toBe(0);
       expect(waitResult.stdout.trim()).toBe('completed');
 
       // Read the response
       const lastMessageResult = await runDevSessionsCli(
         ['last-message', championId, '--count', '1'],
-        { cwd: context.workspaceDir }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 70_000
+        }
       );
-      expect(lastMessageResult.code).toBe(0);
+      expect(lastMessageResult.code, lastMessageResult.stderr).toBe(0);
       expect(lastMessageResult.stdout.trim().toLowerCase()).toContain('pong');
 
       // Clean kill
-      const killResult = await runDevSessionsCli(['kill', championId], { cwd: context.workspaceDir });
-      expect(killResult.code).toBe(0);
+      const killResult = await runDevSessionsCli(['kill', championId], {
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context)
+      });
+      expect(killResult.code, killResult.stderr).toBe(0);
+      context.championId = null;
+
+      const resumeResult = await runDevSessionsCli(['resume', taskId, '--quiet'], {
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context),
+        timeoutMs: 70_000
+      });
+      expect(resumeResult.code, resumeResult.stderr).toBe(0);
+      context.championId = resumeResult.stdout.trim();
+
+      const resumedReply = await runDevSessionsCli(
+        [
+          'ask',
+          context.championId,
+          '--timeout',
+          '90',
+          '--',
+          'Reply with exactly CLAUDE_RESUME_OK and no other text.'
+        ],
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 100_000
+        }
+      );
+      expect(resumedReply.code, resumedReply.stderr).toBe(0);
+      expect(resumedReply.stdout.trim()).toBe('CLAUDE_RESUME_OK');
+
+      const resumedKill = await runDevSessionsCli(['kill', context.championId], {
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context)
+      });
+      expect(resumedKill.code, resumedKill.stderr).toBe(0);
       context.championId = null;
     },
-    120_000
+    240_000
   );
 
   it(
@@ -130,40 +194,56 @@ describeIfReal('real Claude e2e', () => {
     async () => {
       const createResult = await runDevSessionsCli(
         ['create', '--path', context.workspaceDir, '--mode', 'native', '--quiet'],
-        { cwd: context.workspaceDir }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 70_000
+        }
       );
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
       const championId = createResult.stdout.trim();
       context.championId = championId;
 
       // Send a task
       await runDevSessionsCli(
         ['send', championId, 'Reply with exactly one word: PONG.'],
-        { cwd: context.workspaceDir }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context)
+        }
       );
 
       // After send: status should be working OR idle (send is non-blocking; fast responses
       // may complete before this status check runs). Just verify the command succeeds.
       const statusAfterSend = await runDevSessionsCli(['status', championId], {
-        cwd: context.workspaceDir
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context)
       });
-      expect(statusAfterSend.code).toBe(0);
+      expect(statusAfterSend.code, statusAfterSend.stderr).toBe(0);
       expect(['working', 'idle']).toContain(statusAfterSend.stdout.trim());
 
       // Wait for completion
       await runDevSessionsCli(
         ['wait', championId, '--timeout', '90'],
-        { cwd: context.workspaceDir, timeoutMs: 100_000 }
+        {
+          cwd: context.workspaceDir,
+          env: isolatedCliEnv(context),
+          timeoutMs: 100_000
+        }
       );
 
       // After wait: should be idle again
       const statusAfterWait = await runDevSessionsCli(['status', championId], {
-        cwd: context.workspaceDir
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context)
       });
-      expect(statusAfterWait.code).toBe(0);
+      expect(statusAfterWait.code, statusAfterWait.stderr).toBe(0);
       expect(statusAfterWait.stdout.trim()).toBe('idle');
 
-      await runDevSessionsCli(['kill', championId], { cwd: context.workspaceDir });
+      await runDevSessionsCli(['kill', championId], {
+        cwd: context.workspaceDir,
+        env: isolatedCliEnv(context)
+      });
       context.championId = null;
     },
     120_000

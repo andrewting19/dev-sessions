@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionStore } from '../../src/session-store';
+import { resolveSessionStorePath, SessionStore } from '../../src/session-store';
 import { StoredSession } from '../../src/types';
 
 function createSession(championId: string): StoredSession {
@@ -35,6 +35,11 @@ describe('SessionStore', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
+  it('uses the configured store path', () => {
+    expect(resolveSessionStorePath({ DEV_SESSIONS_STORE_PATH: './custom-sessions.json' }))
+      .toBe(path.resolve('./custom-sessions.json'));
+  });
+
   it('performs CRUD operations', async () => {
     const session = createSession('fizz-top');
 
@@ -64,6 +69,15 @@ describe('SessionStore', () => {
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0].championId).toBe('riven-jg');
+  });
+
+  it('persists a remote binary after its sessions are deleted', async () => {
+    await store.setRemoteBin('buildbox', '/opt/bin/dev-sessions');
+    await store.upsertSession(createSession('riven-jg'));
+    await store.deleteSession('riven-jg');
+
+    const reloadedStore = new SessionStore(storePath);
+    expect(await reloadedStore.getRemoteBin('buildbox')).toBe('/opt/bin/dev-sessions');
   });
 
   it('persists Grok session and prompt latch fields', async () => {

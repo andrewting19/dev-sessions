@@ -70,6 +70,8 @@ explicit retry or cancel decision.
 
 Idle registry entries retire automatically after 48 hours. The backend task or
 thread remains the source of history. Resume it with `dev-sessions resume <task-id>`.
+`kill` also retires the active pointer and keeps the backend task available for
+the same resume flow.
 
 For scheduled work, install the gateway daemon on the machine that must continue
 while the controller is offline:

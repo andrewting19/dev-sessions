@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { toTmuxSessionName } from '../champion-ids';
 import {
+  countHumanMessages,
   countSystemEntries,
   extractTextBlocks,
   getAssistantTextBlocks,
@@ -64,7 +65,10 @@ export class ClaudeBackend implements Backend {
   async send(session: StoredSession, message: string): Promise<Partial<StoredSession>> {
     const tmuxSessionName = toTmuxSessionName(session.championId);
     const sendTime = new Date().toISOString();
+    const transcriptPath = getClaudeTranscriptPath(session.path, session.internalId);
+    const baselineHumanCount = countHumanMessages(await readClaudeTranscript(transcriptPath));
     await this.raw.sendMessage(tmuxSessionName, message);
+    await this.waitForMessageAcceptance(tmuxSessionName, transcriptPath, baselineHumanCount);
     return {
       lastUsed: sendTime,
       status: 'active',
@@ -214,5 +218,32 @@ export class ClaudeBackend implements Backend {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
     });
+  }
+
+  private async waitForMessageAcceptance(
+    tmuxSessionName: string,
+    transcriptPath: string,
+    baselineHumanCount: number
+  ): Promise<void> {
+    const attempts = 3;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const entries = await readClaudeTranscript(transcriptPath);
+        if (countHumanMessages(entries) > baselineHumanCount) {
+          return;
+        }
+        await this.sleep(100);
+      }
+
+      if ((await this.raw.sessionExists(tmuxSessionName)) === 'dead') {
+        throw new Error('Claude exited before it accepted the message');
+      }
+      if (attempt < attempts - 1) {
+        await this.raw.submitMessage(tmuxSessionName);
+      }
+    }
+
+    throw new Error('Claude did not accept the message after three submit attempts');
   }
 }

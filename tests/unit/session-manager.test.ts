@@ -791,7 +791,7 @@ describe('SessionManager', () => {
     expect(waitResult.elapsedMs).toBeGreaterThanOrEqual(200);
   });
 
-  it('routes mixed Claude and Codex sessions to the correct backend and kill path', async () => {
+  it('retires mixed Claude and Codex sessions without archiving the Codex thread', async () => {
     const claudeSession = await manager.createSession({
       path: '/tmp/claude-mixed',
       mode: 'native'
@@ -836,12 +836,7 @@ describe('SessionManager', () => {
     await manager.killSession(codexSession.championId);
     await manager.killSession(claudeSession.championId);
 
-    expect(codexBackend.killCalls).toEqual([
-      {
-        championId: codexSession.championId,
-        pid: 9001
-      }
-    ]);
+    expect(codexBackend.killCalls).toEqual([]);
     expect(backend.killCalls).toEqual([toTmuxSessionName(claudeSession.championId)]);
     expect(await manager.listSessions()).toEqual([]);
   });

@@ -3,6 +3,7 @@ import {
   Backend,
   BackendCreateOptions,
   BackendCreateResult,
+  BackendDeliveryWaitResult,
   BackendResumeOptions,
   BackendStatusResult,
   BackendWaitResult
@@ -242,6 +243,28 @@ export class CodexBackend implements Backend {
       timedOut: waitResult.timedOut || waitResult.status === 'interrupted',
       elapsedMs: waitResult.elapsedMs,
       storeUpdate: postWaitUpdate
+    };
+  }
+
+  async waitForDelivery(
+    session: StoredSession,
+    deliveryId: string,
+    timeoutMs: number,
+    intervalMs: number
+  ): Promise<BackendDeliveryWaitResult> {
+    const result = await this.wait({
+      ...session,
+      codexTurnInProgress: true,
+      codexActiveTurnId: deliveryId,
+      lastTurnStatus: undefined,
+      lastTurnError: undefined
+    }, timeoutMs, intervalMs);
+    const messages = result.storeUpdate.lastAssistantMessages;
+    return {
+      ...result,
+      result: messages && messages.length > (session.lastAssistantMessages?.length ?? 0)
+        ? messages[messages.length - 1]
+        : undefined
     };
   }
 

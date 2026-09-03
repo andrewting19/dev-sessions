@@ -98,6 +98,30 @@ describe('codex daemon startup', () => {
     await expect(manager.ensureServer()).rejects.toThrow(/Timed out waiting for Codex app-server startup/);
   });
 
+  it('waits for a stopped daemon before it removes the state file', async () => {
+    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+    const childPid = child.pid as number;
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      pid: childPid,
+      port: 45_123,
+      url: 'ws://127.0.0.1:45123',
+      startedAt: new Date().toISOString()
+    }), 'utf8');
+
+    try {
+      const manager = new DefaultCodexAppServerDaemonManager(statePath, logPath);
+      await manager.stopServer();
+
+      expect(isProcessRunning(childPid)).toBe(false);
+      await expect(manager.getServer()).resolves.toBeUndefined();
+    } finally {
+      if (isProcessRunning(childPid)) {
+        process.kill(childPid, 'SIGKILL');
+      }
+    }
+  });
+
   it('recovers a stale startup lock from a crashed process', async () => {
     const port = await listenOnEphemeralPort();
     const lockPath = `${statePath}.startup.lock`;

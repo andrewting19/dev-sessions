@@ -9,6 +9,7 @@ const describeReal = runReal ? describe : describe.skip;
 
 describeReal('Grok Build real E2E', () => {
   let workspace = '';
+  let sessionId = '';
   const backend = new GrokAppServerBackend();
 
   beforeAll(async () => {
@@ -17,7 +18,9 @@ describeReal('Grok Build real E2E', () => {
   });
 
   afterAll(async () => {
-    await backend.stopAppServer();
+    if (sessionId) {
+      await backend.closeSession(sessionId).catch(() => undefined);
+    }
     if (workspace) {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -25,6 +28,7 @@ describeReal('Grok Build real E2E', () => {
 
   it('runs create, non-blocking send, exact wait, replay, continuity, and close on grok-4.6', async () => {
     const created = await backend.createSession(workspace, 'grok-4.6');
+    sessionId = created.sessionId;
     expect(created.model).toBe('grok-4.6');
 
     const first = await backend.sendMessage(
@@ -60,5 +64,6 @@ describeReal('Grok Build real E2E', () => {
     ]);
 
     await backend.closeSession(created.sessionId);
+    sessionId = '';
   }, 240_000);
 });

@@ -184,6 +184,10 @@ export function countAssistantMessages(entries: ClaudeTranscriptEntry[]): number
   return entries.reduce((count, entry) => count + (isAssistantMessage(entry) ? 1 : 0), 0);
 }
 
+export function countHumanMessages(entries: ClaudeTranscriptEntry[]): number {
+  return entries.reduce((count, entry) => count + (isHumanMessage(entry) ? 1 : 0), 0);
+}
+
 export function countSystemEntries(entries: ClaudeTranscriptEntry[]): number {
   return entries.reduce((count, entry) => count + (entry.type === 'system' ? 1 : 0), 0);
 }

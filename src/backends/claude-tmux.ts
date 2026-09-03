@@ -14,7 +14,10 @@ function shellEscape(value: string): string {
 }
 
 export class ClaudeTmuxBackend {
-  constructor(private readonly timeoutMs: number = 15_000) {}
+  constructor(
+    private readonly timeoutMs: number = 60_000,
+    private readonly readyStabilityMs: number = 750
+  ) {}
 
   async createSession(
     tmuxSessionName: string,
@@ -70,7 +73,12 @@ export class ClaudeTmuxBackend {
       await this.sleep(5000);
       await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
     } else {
-      await this.waitForTranscriptReady(workspacePath, sessionUuid);
+      try {
+        await this.waitForInteractiveReady(tmuxSessionName, workspacePath, sessionUuid);
+      } catch (error: unknown) {
+        await this.killSession(tmuxSessionName).catch(() => undefined);
+        throw error;
+      }
     }
   }
 
@@ -96,6 +104,10 @@ export class ClaudeTmuxBackend {
     // Keep Enter presses as separate tmux commands to match the original gateway behavior.
     await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
     await this.sleep(150);
+    await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+  }
+
+  async submitMessage(tmuxSessionName: string): Promise<void> {
     await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
   }
 
@@ -196,7 +208,8 @@ export class ClaudeTmuxBackend {
     return `unset CLAUDECODE; export IS_SANDBOX=1; cd ${shellEscape(workspacePath)} && ${commandParts.join(' ')}`;
   }
 
-  private async waitForTranscriptReady(
+  private async waitForInteractiveReady(
+    tmuxSessionName: string,
     workspacePath: string,
     sessionUuid: string,
     pollIntervalMs: number = 200
@@ -205,24 +218,69 @@ export class ClaudeTmuxBackend {
     const timeoutOverride = parseInt(process.env['DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS'] ?? '');
     const timeoutMs = Number.isFinite(timeoutOverride) && timeoutOverride >= 0 ? timeoutOverride : this.timeoutMs;
     const deadline = Date.now() + timeoutMs;
+    let promptReadySince: number | undefined;
+    let trustConfirmed = false;
+    let trustPromptReadySince: number | undefined;
+    let lastPane = '';
 
     while (Date.now() < deadline) {
       try {
         await access(transcriptPath);
-        return;
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw error;
         }
-        // File not yet created; keep polling.
+      }
+
+      try {
+        const pane = await this.execTmux(['capture-pane', '-p', '-t', tmuxSessionName]);
+        lastPane = pane;
+        if (
+          !trustConfirmed &&
+          /Yes, I trust this folder/i.test(pane)
+        ) {
+          trustPromptReadySince ??= Date.now();
+          if (Date.now() - trustPromptReadySince >= this.readyStabilityMs) {
+            if (/❯\s*No, exit/i.test(pane)) {
+              await this.execTmux(['send-keys', '-t', tmuxSessionName, 'Down']);
+              await this.sleep(250);
+            }
+            await this.execTmux(['send-keys', '-t', tmuxSessionName, 'C-m']);
+            trustConfirmed = true;
+            trustPromptReadySince = undefined;
+            promptReadySince = undefined;
+          }
+        } else if (
+          /(?:^|\n)\s*❯(?:\s|$)/m.test(pane) &&
+          /bypass permissions on/i.test(pane)
+        ) {
+          promptReadySince ??= Date.now();
+          if (Date.now() - promptReadySince >= this.readyStabilityMs) {
+            return;
+          }
+        } else {
+          promptReadySince = undefined;
+          trustPromptReadySince = undefined;
+        }
+      } catch (error: unknown) {
+        const liveness = await this.sessionExists(tmuxSessionName);
+        if (liveness === 'dead') {
+          const paneDetail = lastPane.trim().slice(-1_000);
+          throw new Error(
+            'Claude exited before its interactive prompt became ready' +
+            (paneDetail ? `\nLast tmux pane:\n${paneDetail}` : '')
+          );
+        }
       }
 
       await this.sleep(pollIntervalMs);
     }
 
-    console.warn(
-      `[dev-sessions] Timed out waiting for Claude transcript at ${transcriptPath}. ` +
-      'Claude may not be ready to accept input yet.'
+    const paneDetail = lastPane.trim().slice(-1_000);
+    throw new Error(
+      `Timed out waiting for Claude to become ready in ${tmuxSessionName}. ` +
+      `No interactive prompt appeared. Transcript: ${transcriptPath}` +
+      (paneDetail ? `\nLast tmux pane:\n${paneDetail}` : '')
     );
   }
 

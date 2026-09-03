@@ -34,6 +34,10 @@ export interface BackendWaitResult extends WaitResult {
   errorToThrow?: Error;
 }
 
+export interface BackendDeliveryWaitResult extends BackendWaitResult {
+  result?: string;
+}
+
 export interface Backend {
   readonly cli: SessionCli;
   readonly deadSessionPolicy: 'prune' | 'deactivate';
@@ -45,6 +49,12 @@ export interface Backend {
   onSendError(session: StoredSession, error: Error): Partial<StoredSession>;
   status(session: StoredSession): Promise<BackendStatusResult>;
   wait(session: StoredSession, timeoutMs: number, intervalMs: number): Promise<BackendWaitResult>;
+  waitForDelivery?(
+    session: StoredSession,
+    deliveryId: string,
+    timeoutMs: number,
+    intervalMs: number
+  ): Promise<BackendDeliveryWaitResult>;
   exists(session: StoredSession): Promise<'alive' | 'dead' | 'unknown'>;
   getLastMessages(session: StoredSession, count: number): Promise<string[]>;
   getLogs(session: StoredSession): Promise<SessionTurn[]>;

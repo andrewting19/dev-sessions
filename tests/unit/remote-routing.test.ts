@@ -39,6 +39,7 @@ interface FakeRemote {
   inspect: ReturnType<typeof vi.fn>;
   messages: ReturnType<typeof vi.fn>;
   createSchedule: ReturnType<typeof vi.fn>;
+  runScheduleNow: ReturnType<typeof vi.fn>;
 }
 
 function createFakeRemote(): FakeRemote {
@@ -77,7 +78,21 @@ function createFakeRemote(): FakeRemote {
       cron: '0 * * * *', timezone: 'UTC', misfirePolicy: 'latest', overlapPolicy: 'skip',
       maxLatenessMs: 3_600_000, nextRunAt: '2026-01-01T01:00:00.000Z',
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
-    })
+    }),
+    schedules: vi.fn().mockResolvedValue([]),
+    scheduleAction: vi.fn().mockResolvedValue({
+      id: 'sch-1', name: 'remote audit', status: 'active', targetKind: 'session',
+      targetSessionId: 'mayor-mid', message: 'audit', cron: '0 * * * *', timezone: 'UTC',
+      misfirePolicy: 'latest', overlapPolicy: 'skip', maxLatenessMs: 3_600_000,
+      nextRunAt: '2026-01-01T01:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    }),
+    runScheduleNow: vi.fn().mockResolvedValue({
+      id: 'run-1', scheduleId: 'sch-1', scheduledFor: '2026-01-01T00:00:00.000Z',
+      status: 'running', createdAt: '2026-01-01T00:00:00.000Z'
+    }),
+    runs: vi.fn().mockResolvedValue([]),
+    run: vi.fn().mockResolvedValue(undefined)
   };
 
   return { client: fns as unknown as RemoteHostClient, ...fns } as FakeRemote;
@@ -350,5 +365,22 @@ describe('RoutingSessionManager', () => {
 
     const stored = await store.getSession(session.championId);
     expect(stored?.remoteBin).toBe('/opt/bin/dev-sessions');
+
+    clientFactoryCalls.length = 0;
+    const schedule = await manager.createSchedule({
+      targetSessionId: session.championId,
+      name: 'remote audit',
+      message: 'audit',
+      cron: '0 * * * *',
+      timezone: 'UTC'
+    });
+    await store.deleteSession(session.championId);
+    clientFactoryCalls.length = 0;
+    await manager.runScheduleNow(schedule.id);
+    await manager.getSchedule(schedule.id);
+    await manager.listScheduleRuns(schedule.id);
+
+    expect(clientFactoryCalls).toHaveLength(3);
+    expect(clientFactoryCalls.every((call) => call.remoteBin === '/opt/bin/dev-sessions')).toBe(true);
   });
 });

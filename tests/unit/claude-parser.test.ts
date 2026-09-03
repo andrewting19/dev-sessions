@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   countAssistantMessages,
+  countHumanMessages,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
   hasAssistantResponseAfterLatestUser,
@@ -96,6 +97,14 @@ describe('claude transcript parser', () => {
   it('counts assistant messages accurately', async () => {
     const entries = await readClaudeTranscript(path.join(fixturesDir, 'assistant-blocks.jsonl'));
     expect(countAssistantMessages(entries)).toBe(2);
+  });
+
+  it('counts human and user messages accurately', () => {
+    expect(countHumanMessages([
+      { type: 'human', message: { content: 'first' } },
+      { type: 'user', message: { content: 'second' } },
+      { type: 'assistant', message: { content: 'reply' } }
+    ])).toBe(2);
   });
 });
 

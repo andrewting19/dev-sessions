@@ -344,7 +344,11 @@ export class SessionManager {
     const session = await this.requireSession(championId);
     const backend = this.getBackend(session.cli);
 
-    await backend.kill(session);
+    if (backend.retire) {
+      await backend.retire(session);
+    } else {
+      await backend.kill(session);
+    }
     this.automation?.rememberRetiredSession(session);
     await this.store.deleteSession(championId);
 
@@ -563,6 +567,36 @@ export class SessionManager {
     };
   }
 
+  async waitForDelivery(
+    championId: string,
+    deliveryId: string,
+    options: WaitOptions = {}
+  ): Promise<WaitResult & { result?: string }> {
+    const session = await this.requireSession(championId);
+    const backend = this.getBackend(session.cli);
+    if (!backend.waitForDelivery) {
+      const wait = await this.waitForSession(championId, options);
+      const result = wait.completed
+        ? (await this.getLastAssistantTextBlocks(championId, 1))[0]
+        : undefined;
+      return { ...wait, result };
+    }
+
+    const timeoutMs = Math.max(0.05, options.timeoutSeconds ?? 300) * 1000;
+    const intervalMs = Math.max(0.05, options.intervalSeconds ?? 2) * 1000;
+    const wait = await backend.waitForDelivery(session, deliveryId, timeoutMs, intervalMs);
+    if (Object.keys(wait.storeUpdate).length > 0) {
+      await this.store.updateSession(championId, wait.storeUpdate);
+    }
+    if (wait.errorToThrow) throw wait.errorToThrow;
+    return {
+      completed: wait.completed,
+      timedOut: wait.timedOut,
+      elapsedMs: wait.elapsedMs,
+      result: wait.result
+    };
+  }
+
   private async requireSession(championId: string): Promise<StoredSession> {
     const session = await this.store.getSession(championId);
     if (!session) {
@@ -641,7 +675,7 @@ export function createDefaultSessionManager(
     });
   }
 
-  const store = createDefaultSessionStore();
+  const store = createDefaultSessionStore(env);
   const local = new SessionManager(
     store,
     new ClaudeBackend(new ClaudeTmuxBackend()),

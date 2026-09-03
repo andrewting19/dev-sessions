@@ -128,7 +128,16 @@ export class RoutingSessionManager {
   }
 
   private clientFor(session: StoredSession): RemoteHostClient {
-    return this.clientFactory(session.host as string, session.remoteBin ?? 'dev-sessions');
+    return this.clientFactory(session.host as string, session.remoteBin ?? resolveRemoteBin(this.env));
+  }
+
+  private async clientForHost(host: string): Promise<RemoteHostClient> {
+    const savedRemoteBin = await this.store.getRemoteBin(host);
+    const sessions = (await this.store.listSessions()).filter(
+      (session) => session.host === host && session.remoteBin
+    );
+    const remoteBin = savedRemoteBin ?? sessions[sessions.length - 1]?.remoteBin ?? resolveRemoteBin(this.env);
+    return this.clientFactory(host, remoteBin);
   }
 
   private async lookup(championId: string): Promise<StoredSession | undefined> {
@@ -186,6 +195,7 @@ export class RoutingSessionManager {
     }
 
     const stub: StoredSession = { ...remoteSession, host, remoteBin };
+    await this.store.setRemoteBin(host, remoteBin);
     await this.store.upsertSession(stub);
     return stub;
   }
@@ -196,6 +206,7 @@ export class RoutingSessionManager {
     const client = this.clientFactory(options.host, remoteBin);
     const remote = await client.resume({ ...options, host: undefined });
     const stub = { ...remote, host: options.host, remoteBin };
+    await this.store.setRemoteBin(options.host, remoteBin);
     await this.store.upsertSession(stub);
     return stub;
   }
@@ -248,7 +259,7 @@ export class RoutingSessionManager {
     host?: string
   ): Promise<QueuedMessage[]> {
     if (host) {
-      return (await this.clientFactory(host, 'dev-sessions').messages(championId, statuses, limit))
+      return (await (await this.clientForHost(host)).messages(championId, statuses, limit))
         .map((message) => routeMessage(host, message));
     }
     if (!championId) return this.local.listQueuedMessages(undefined, statuses, limit);
@@ -265,7 +276,7 @@ export class RoutingSessionManager {
     if (!host) return this.local.getQueuedMessage(routed.id);
     const client = session?.host === host
       ? this.clientFor(session)
-      : this.clientFactory(host, session?.remoteBin ?? 'dev-sessions');
+      : await this.clientForHost(host);
     const message = await client.message(routed.id);
     return message ? routeMessage(host, message) : undefined;
   }
@@ -277,7 +288,7 @@ export class RoutingSessionManager {
     if (!host) return this.local.waitForQueuedMessage(routed.id, options);
     const client = session?.host === host
       ? this.clientFor(session)
-      : this.clientFactory(host, session?.remoteBin ?? 'dev-sessions');
+      : await this.clientForHost(host);
     const result = await client.waitMessage(routed.id, {
       timeoutSeconds: options.timeoutSeconds ?? 300,
       intervalSeconds: options.intervalSeconds
@@ -305,13 +316,13 @@ export class RoutingSessionManager {
     if (!host) return this.local.replyToQueuedMessage(routed.id, body, options);
     const client = session?.host === host
       ? this.clientFor(session)
-      : this.clientFactory(host, session?.remoteBin ?? 'dev-sessions');
+      : await this.clientForHost(host);
     return routeMessage(host, await client.replyMessage(routed.id, body, options.idempotencyKey));
   }
 
   async createSchedule(options: CreateScheduleOptions): Promise<Schedule> {
     let host = options.host;
-    let remoteBin = 'dev-sessions';
+    let remoteBin = resolveRemoteBin(this.env);
     if (options.targetSessionId) {
       const session = await this.lookup(options.targetSessionId);
       host = host ?? session?.host;
@@ -319,18 +330,19 @@ export class RoutingSessionManager {
     }
     if (!host) return await this.local.createSchedule(options);
     const remote = await this.clientFactory(host, remoteBin).createSchedule({ ...options, host: undefined });
+    await this.store.setRemoteBin(host, remoteBin);
     return routeSchedule(host, remote);
   }
 
   async listSchedules(host?: string): Promise<Schedule[]> {
     if (!host) return this.local.listSchedules();
-    return (await this.clientFactory(host, 'dev-sessions').schedules()).map((schedule) => routeSchedule(host, schedule));
+    return (await (await this.clientForHost(host)).schedules()).map((schedule) => routeSchedule(host, schedule));
   }
 
   async getSchedule(id: string): Promise<Schedule | undefined> {
     const routed = splitRoutedId(id);
     if (!routed.host) return this.local.getSchedule(routed.id);
-    const schedule = await this.clientFactory(routed.host, 'dev-sessions').scheduleAction('show', routed.id);
+    const schedule = await (await this.clientForHost(routed.host)).scheduleAction('show', routed.id);
     return schedule ? routeSchedule(routed.host, schedule) : undefined;
   }
 
@@ -349,25 +361,25 @@ export class RoutingSessionManager {
   async runScheduleNow(id: string): Promise<ScheduleRun> {
     const routed = splitRoutedId(id);
     if (!routed.host) return this.local.runScheduleNow(routed.id);
-    return routeRun(routed.host, await this.clientFactory(routed.host, 'dev-sessions').runScheduleNow(routed.id));
+    return routeRun(routed.host, await (await this.clientForHost(routed.host)).runScheduleNow(routed.id));
   }
 
   async listScheduleRuns(scheduleId?: string, limit: number = 100, host?: string): Promise<ScheduleRun[]> {
     if (host) {
-      return (await this.clientFactory(host, 'dev-sessions').runs(scheduleId, limit))
+      return (await (await this.clientForHost(host)).runs(scheduleId, limit))
         .map((run) => routeRun(host, run));
     }
     if (!scheduleId) return this.local.listScheduleRuns(undefined, limit);
     const routed = splitRoutedId(scheduleId);
     if (!routed.host) return this.local.listScheduleRuns(routed.id, limit);
-    return (await this.clientFactory(routed.host, 'dev-sessions').runs(routed.id, limit))
+    return (await (await this.clientForHost(routed.host)).runs(routed.id, limit))
       .map((run) => routeRun(routed.host as string, run));
   }
 
   async getScheduleRun(id: string): Promise<ScheduleRun | undefined> {
     const routed = splitRoutedId(id);
     if (!routed.host) return this.local.getScheduleRun(routed.id);
-    const run = await this.clientFactory(routed.host, 'dev-sessions').run(routed.id);
+    const run = await (await this.clientForHost(routed.host)).run(routed.id);
     return run ? routeRun(routed.host, run) : undefined;
   }
 
@@ -390,7 +402,7 @@ export class RoutingSessionManager {
     }
     const client = session?.host === host
       ? this.clientFor(session)
-      : this.clientFactory(host, session?.remoteBin ?? 'dev-sessions');
+      : await this.clientForHost(host);
     return routeMessage(host, await client.messageAction(action, routed.id));
   }
 
@@ -403,7 +415,7 @@ export class RoutingSessionManager {
           ? this.local.resumeSchedule(routed.id)
           : this.local.deleteSchedule(routed.id);
     }
-    const schedule = await this.clientFactory(routed.host, 'dev-sessions').scheduleAction(action, routed.id);
+    const schedule = await (await this.clientForHost(routed.host)).scheduleAction(action, routed.id);
     if (!schedule) throw new Error(`Schedule not found: ${id}`);
     return routeSchedule(routed.host, schedule);
   }

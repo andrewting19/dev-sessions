@@ -34,6 +34,7 @@ async function createMockClaudeBinary(binDirectory: string): Promise<void> {
   const script = [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
+    "printf 'Claude Code mock\\n\\n❯ \\n\\nbypass permissions on\\n'",
     'sleep 999'
   ].join('\n');
 
@@ -56,7 +57,7 @@ async function createContext(): Promise<CliTestContext> {
     ...process.env,
     HOME: homeDir,
     PATH: `${mockBinDir}${path.delimiter}${process.env.PATH ?? ''}`,
-    DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS: '100'
+    DEV_SESSIONS_TRANSCRIPT_TIMEOUT_MS: '10000'
   };
 
   return {
@@ -109,7 +110,7 @@ describeIfTmux('CLI e2e integration', () => {
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
 
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
       const championId = createResult.stdout.trim();
       expect(championId.length).toBeGreaterThan(0);
 
@@ -133,7 +134,7 @@ describeIfTmux('CLI e2e integration', () => {
         ['create', '--path', activeContext.workspaceDir, '--mode', 'native', '--quiet'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
 
       const championId = createResult.stdout.trim();
       const tmuxName = toTmuxSessionName(championId);
@@ -170,7 +171,7 @@ describeIfTmux('CLI e2e integration', () => {
         ['create', '--path', activeContext.workspaceDir, '--mode', 'native', '--quiet'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
 
       const championId = createResult.stdout.trim();
       const tmuxName = toTmuxSessionName(championId);
@@ -224,7 +225,7 @@ describeIfTmux('CLI e2e integration', () => {
         ['create', '--path', activeContext.workspaceDir, '--mode', 'native'],
         { env: activeContext.env, cwd: activeContext.workspaceDir }
       );
-      expect(createResult.code).toBe(0);
+      expect(createResult.code, createResult.stderr).toBe(0);
       expect(createResult.stdout).toMatch(/Created session [a-z0-9-]+/i);
       expect(await extractChampionId(activeContext.homeDir)).toBeTruthy();
     },

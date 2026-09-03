@@ -6,6 +6,7 @@ import { StoredSession } from './types';
 interface SessionStoreFile {
   version: number;
   sessions: StoredSession[];
+  remoteBins: Record<string, string>;
 }
 
 const CURRENT_VERSION = 1;
@@ -13,7 +14,11 @@ const LOCK_TIMEOUT_MS = 10_000;
 const LOCK_RETRY_INTERVAL_MS = 20;
 const LOCK_STALE_MS = 30_000;
 
-function getDefaultStorePath(): string {
+export function resolveSessionStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.DEV_SESSIONS_STORE_PATH;
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
   return path.join(os.homedir(), '.dev-sessions', 'sessions.json');
 }
 
@@ -61,7 +66,7 @@ function sleep(ms: number): Promise<void> {
 export class SessionStore {
   private readonly lockPath: string;
 
-  constructor(private readonly storePath: string = getDefaultStorePath()) {
+  constructor(private readonly storePath: string = resolveSessionStorePath()) {
     this.lockPath = `${storePath}.lock`;
   }
 
@@ -77,6 +82,22 @@ export class SessionStore {
   async getSession(championId: string): Promise<StoredSession | undefined> {
     const store = await this.readStore();
     return store.sessions.find((session) => session.championId === championId);
+  }
+
+  async getRemoteBin(host: string): Promise<string | undefined> {
+    const store = await this.readStore();
+    return store.remoteBins[host];
+  }
+
+  async setRemoteBin(host: string, remoteBin: string): Promise<void> {
+    await this.withLock(async () => {
+      const store = await this.readStore();
+      if (store.remoteBins[host] === remoteBin) {
+        return;
+      }
+      store.remoteBins[host] = remoteBin;
+      await this.writeStore(store);
+    });
   }
 
   async upsertSession(session: StoredSession): Promise<void> {
@@ -247,13 +268,21 @@ export class SessionStore {
 
       return {
         version: typeof parsed.version === 'number' ? parsed.version : CURRENT_VERSION,
-        sessions
+        sessions,
+        remoteBins: parsed.remoteBins && typeof parsed.remoteBins === 'object' && !Array.isArray(parsed.remoteBins)
+          ? Object.fromEntries(
+            Object.entries(parsed.remoteBins).filter(
+              (entry): entry is [string, string] => typeof entry[1] === 'string'
+            )
+          )
+          : {}
       };
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return {
           version: CURRENT_VERSION,
-          sessions: []
+          sessions: [],
+          remoteBins: {}
         };
       }
 
@@ -271,6 +300,6 @@ export class SessionStore {
   }
 }
 
-export function createDefaultSessionStore(): SessionStore {
-  return new SessionStore();
+export function createDefaultSessionStore(env: NodeJS.ProcessEnv = process.env): SessionStore {
+  return new SessionStore(resolveSessionStorePath(env));
 }

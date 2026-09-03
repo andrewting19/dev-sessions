@@ -16,7 +16,8 @@
 - [x] `last-message` — extract assistant text blocks from JSONL
 - [x] `status` — infer idle/working/waiting_for_input (system-entry-aware)
 - [x] `wait` — system-entry-based turn detection (reliable after 3 iterations of fixes)
-- [x] `create` race fix — polls for transcript file existence before returning, so a fast `send` after `create` doesn't type into an unready TUI
+- [x] `create` race fix — waits for a stable interactive prompt, confirms the explicit workspace trust screen, and fails with pane evidence if Claude exits or does not become ready
+- [x] `send` acceptance check — confirms the new user entry in the Claude transcript and retries a lost Enter key before returning
 
 ### Phase 2b: Docker Gateway ✅
 - [x] Thin HTTP relay gateway (`dev-sessions gateway --port <port>`)
@@ -39,8 +40,9 @@
 - [x] `create` auto-starts daemon if not running, calls `thread/start`
 - [x] `send` connects via WebSocket, calls `turn/start`, waits for `turn/completed`
 - [x] `wait`, `last-message`, `status` all work
-- [x] `kill` archives thread, stops daemon when last Codex session killed
+- [x] `kill` retires the active pointer without archiving the durable thread; rollback-only cleanup can still archive an unrecorded thread
 - [x] Daemon metadata at `~/.dev-sessions/codex-appserver.json`
+- [x] Daemon stop waits for process exit before it removes state, so immediate task resume cannot start a second writer
 - [x] `last-message` reads from `thread/read` RPC — persisted history across process restarts
 - [x] `status`/`wait` reconcile with live app-server state via `thread/resume` — no longer trust stale store cache
 - [x] `sessionExists()` verifies specific thread ID via `thread/list` — not just daemon liveness
@@ -73,9 +75,13 @@
 - [x] claude-ting docs updated with host setup instructions (gateway install, install-skill)
 
 ### Testing ✅
-- [x] 289 passing automated tests across 28 test files (real-provider tests are opt-in)
-- [x] Real E2E verified: Claude Code send→wait→last-message
-- [x] Real E2E verified: Codex send→wait→last-message (PONG test)
+- [x] Full automated suite passes; real-provider tests are opt-in
+- [x] Real E2E verified: Claude Code create→send→wait→last-message→kill→resume by task ID→second turn
+- [x] Real E2E verified: Codex keeps one thread ID across create→first turn→kill→resume by task ID→second turn
+- [x] Real Codex E2E uses isolated session, automation, daemon-state, and daemon-log paths and archives its test thread during cleanup
+- [x] Real E2E verified: Grok 4.6 create→first turn→kill→resume by task ID→second turn
+- [x] Real E2E verified: scheduled Codex work records the exact scheduled-turn result, not a stale previous reply
+- [x] Real remote E2E verified on Ubuntu over SSH: a temporary remote gateway completed a scheduled Codex tool turn after the control SSH connection ended
 - [x] Real E2E verified: Docker gateway relay
 
 ### Phase 6: Codex 0.139.0 + Goals ✅
@@ -103,6 +109,7 @@
 
 ### Phase 9: Remote host support (SSH) ✅
 - [x] `create --host <ssh-target>` — session spawns on the remote; all other commands route automatically via the local registry (`host` + `remoteBin` stored per session)
+- [x] Remote schedule, message, and run IDs reuse the saved `remoteBin` for their host after process restart and session cleanup instead of falling back to a stale global install
 - [x] Transport: `ssh <host> bash -lc '<remoteBin> <cmd> --json'` with ControlMaster multiplexing (60s persist), `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, `ConnectTimeout=10`, ServerAlive keepalives — `src/remote/ssh-runner.ts`
 - [x] `RemoteHostClient` (per-command builders/parsers) + `RoutingSessionManager` (implements `SessionManagerLike`, routes by `session.host`) — same seam as the gateway client
 - [x] Champion IDs pre-allocated locally and passed via `create --id`, so IDs stay unique across hosts; retries if the ID is taken remotely

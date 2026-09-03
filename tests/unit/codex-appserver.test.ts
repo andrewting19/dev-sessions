@@ -196,7 +196,7 @@ describe('CodexAppServerBackend', () => {
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume']);
   });
 
-  it('resumes a thread and fires turn/start without blocking on completion', async () => {
+  it('starts the first turn on a loaded empty thread without changing its ID', async () => {
     const { backend, clients } = createHarness([
       {
         onRequest: (method) => {
@@ -208,7 +208,7 @@ describe('CodexAppServerBackend', () => {
       },
       {
         onRequest: (method) => {
-          if (method === 'thread/resume' || method === 'turn/start') {
+          if (method === 'turn/start') {
             return {};
           }
           throw new Error(`Unexpected method: ${method}`);
@@ -247,12 +247,45 @@ describe('CodexAppServerBackend', () => {
       appServerPid: 9001,
       appServerPort: 4510
     });
-    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'turn/start']);
+    expect(clients[1].requests.map((entry) => entry.method)).toEqual(['turn/start']);
     // getLastAssistantMessages reads from thread/read, not from send result
     await expect(backend.getLastAssistantMessages('riven-jg', created.threadId, 1)).resolves.toEqual(['Done here']);
     expect(clients[2].requests.map((entry) => entry.method)).toEqual(['thread/read']);
     // getSessionStatus returns idle since no lastTurnStatus set by fire-and-forget send
     expect(backend.getSessionStatus('riven-jg')).toBe('idle');
+  });
+
+  it('resumes an unloaded durable thread before it starts the next turn', async () => {
+    let turnStarts = 0;
+    const { backend, clients } = createHarness([
+      {
+        onRequest: (method) => {
+          if (method === 'turn/start') {
+            turnStarts += 1;
+            if (turnStarts === 1) {
+              throw new Error('turn/start failed: thread not loaded: thr_existing');
+            }
+            return { turn: { id: 'turn_existing_2' } };
+          }
+          if (method === 'thread/resume') {
+            return { thread: { id: 'thr_existing' } };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        }
+      }
+    ]);
+
+    const result = await backend.sendMessage('orianna-mid', 'thr_existing', 'Continue', {
+      workspacePath: '/tmp/repo'
+    });
+
+    expect(result.threadId).toBe('thr_existing');
+    expect(result.turnId).toBe('turn_existing_2');
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual([
+      'turn/start',
+      'thread/resume',
+      'turn/start'
+    ]);
   });
 
   it('reads assistant messages from thread/read even when in-memory history is empty', async () => {
@@ -328,7 +361,11 @@ describe('CodexAppServerBackend', () => {
           elapsedMs: 21,
           status: 'completed'
         },
-        onRequest: (method) => {
+        onRequest: (method, params) => {
+          if (method === 'turn/start' && params.threadId === 'stale-thread') {
+            throw new Error('turn/start failed: thread not loaded: stale-thread');
+          }
+
           if (method === 'thread/resume') {
             throw new Error('thread/resume failed: no rollout found for thread id stale-thread');
           }
@@ -358,6 +395,7 @@ describe('CodexAppServerBackend', () => {
     expect(result.threadId).toBe('thr_fallback');
     expect(result.appServerPid).toBe(9001);
     expect(clients[0].requests.map((entry) => entry.method)).toEqual([
+      'turn/start',
       'thread/resume',
       'thread/start',
       'turn/start'
@@ -1132,7 +1170,7 @@ describe('CodexAppServerBackend', () => {
     await backend.sendMessage('zed-mid', 'thr_default_model', 'hello', {
       workspacePath: '/tmp/workspace'
     });
-    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/resume', 'turn/start']);
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['turn/start']);
   });
 
   it('surfaces error notification messages when turn/completed lacks error detail', async () => {

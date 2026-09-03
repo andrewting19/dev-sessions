@@ -18,8 +18,11 @@ vi.mock('node:fs/promises', () => ({
 
 function mockExecFileSuccess(): void {
   execFileMock.mockImplementation(
-    (_command: string, _args: string[], _options: unknown, callback: ExecFileCallback) => {
-      callback(null, '', '');
+    (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+      const stdout = args[0] === 'capture-pane'
+        ? 'Claude Code\n\n❯ \n\nbypass permissions on'
+        : '';
+      callback(null, { stdout, stderr: '' } as unknown as string, '');
       return undefined;
     }
   );
@@ -39,10 +42,10 @@ describe('ClaudeTmuxBackend', () => {
   });
 
   it('builds native startup command with dangerously-skip-permissions', async () => {
-    const backend = new ClaudeTmuxBackend();
+    const backend = new ClaudeTmuxBackend(30_000, 0);
     await backend.createSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-native');
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(execFileMock).toHaveBeenCalledTimes(2);
     expect(execFileMock).toHaveBeenCalledWith(
       'tmux',
       [
@@ -62,7 +65,7 @@ describe('ClaudeTmuxBackend', () => {
   });
 
   it('resumes a native transcript by Claude session ID', async () => {
-    const backend = new ClaudeTmuxBackend();
+    const backend = new ClaudeTmuxBackend(30_000, 0);
     await backend.resumeSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-existing');
 
     expect(execFileMock).toHaveBeenCalledWith(
@@ -78,10 +81,10 @@ describe('ClaudeTmuxBackend', () => {
   });
 
   it('builds native startup command with dangerously-skip-permissions (always permissive)', async () => {
-    const backend = new ClaudeTmuxBackend();
+    const backend = new ClaudeTmuxBackend(30_000, 0);
     await backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-native');
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(execFileMock).toHaveBeenCalledTimes(2);
     expect(execFileMock).toHaveBeenCalledWith(
       'tmux',
       [
@@ -103,7 +106,7 @@ describe('ClaudeTmuxBackend', () => {
   it('builds docker startup command with clauded and sends enter after startup delay', async () => {
     vi.useFakeTimers();
 
-    const backend = new ClaudeTmuxBackend();
+    const backend = new ClaudeTmuxBackend(30_000, 0);
     const createPromise = backend.createSession('dev-ahri-mid', '/tmp/workspace', 'docker', 'uuid-docker');
     await vi.advanceTimersByTimeAsync(5_000);
     await createPromise;
@@ -142,47 +145,122 @@ describe('ClaudeTmuxBackend', () => {
     );
   });
 
-  it('polls for transcript file before returning from createSession (native)', async () => {
+  it('polls until the interactive prompt appears', async () => {
     vi.useFakeTimers();
 
-    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-    // Fail twice then succeed.
-    accessMock
-      .mockRejectedValueOnce(enoent)
-      .mockRejectedValueOnce(enoent)
-      .mockResolvedValue(undefined);
+    let captures = 0;
+    execFileMock.mockImplementation(
+      (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+        if (args[0] === 'capture-pane') captures += 1;
+        const stdout = args[0] === 'capture-pane' && captures >= 3
+          ? 'Claude Code\n\n❯ \n\nbypass permissions on'
+          : '';
+        callback(null, { stdout, stderr: '' } as unknown as string, '');
+        return undefined;
+      }
+    );
 
-    const backend = new ClaudeTmuxBackend();
+    const backend = new ClaudeTmuxBackend(30_000, 0);
     const createPromise = backend.createSession('dev-fizz-top', '/tmp/workspace', 'native', 'uuid-poll');
 
     // Advance past two 200ms poll intervals.
     await vi.advanceTimersByTimeAsync(400);
     await createPromise;
 
-    expect(accessMock).toHaveBeenCalledTimes(3);
+    expect(captures).toBe(3);
   });
 
-  it('logs a warning and returns when transcript polling times out', async () => {
-    vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
+  it('returns when the interactive prompt is ready before the first transcript exists', async () => {
     accessMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    execFileMock.mockImplementation(
+      (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+        const stdout = args[0] === 'capture-pane'
+          ? 'Claude Code v2.1.258\n\n❯ \n\nbypass permissions on'
+          : '';
+        callback(null, { stdout, stderr: '' } as unknown as string, '');
+        return undefined;
+      }
+    );
 
-    const backend = new ClaudeTmuxBackend(500);
-    const createPromise = backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-timeout');
+    const backend = new ClaudeTmuxBackend(30_000, 0);
+    await backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-prompt');
 
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      ['capture-pane', '-p', '-t', 'dev-riven-jg'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
+
+  it('confirms the workspace trust screen before it reports ready', async () => {
+    vi.useFakeTimers();
+    accessMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    let captures = 0;
+    execFileMock.mockImplementation(
+      (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+        if (args[0] === 'capture-pane') captures += 1;
+        const stdout = args[0] !== 'capture-pane'
+          ? ''
+          : captures === 1
+            ? 'Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder'
+            : 'Claude Code\n\n❯ \n\nbypass permissions on';
+        callback(null, { stdout, stderr: '' } as unknown as string, '');
+        return undefined;
+      }
+    );
+
+    const backend = new ClaudeTmuxBackend(30_000, 0);
+    const createPromise = backend.createSession('dev-trust-mid', '/tmp/workspace', 'native', 'uuid-trust');
     await vi.advanceTimersByTimeAsync(600);
     await createPromise;
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Timed out waiting for Claude transcript'));
-    warnSpy.mockRestore();
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      ['send-keys', '-t', 'dev-trust-mid', 'Down'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      ['send-keys', '-t', 'dev-trust-mid', 'C-m'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
+
+  it('kills the tmux session and fails when Claude does not become ready', async () => {
+    vi.useFakeTimers();
+
+    accessMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    execFileMock.mockImplementation(
+      (_command: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
+        const stdout = args[0] === 'capture-pane' ? 'Starting Claude' : '';
+        callback(null, { stdout, stderr: '' } as unknown as string, '');
+        return undefined;
+      }
+    );
+
+    const backend = new ClaudeTmuxBackend(500, 0);
+    const createPromise = backend.createSession('dev-riven-jg', '/tmp/workspace', 'native', 'uuid-timeout');
+    const assertion = expect(createPromise).rejects.toThrow('Timed out waiting for Claude to become ready');
+
+    await vi.advanceTimersByTimeAsync(600);
+    await assertion;
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'tmux',
+      ['kill-session', '-t', 'dev-riven-jg'],
+      expect.any(Object),
+      expect.any(Function)
+    );
   });
 
   it('surfaces non-ENOENT transcript polling errors', async () => {
     const eacces = Object.assign(new Error('EACCES'), { code: 'EACCES' });
     accessMock.mockRejectedValue(eacces);
 
-    const backend = new ClaudeTmuxBackend(500);
+    const backend = new ClaudeTmuxBackend(500, 0);
 
     await expect(
       backend.createSession('dev-orianna-mid', '/tmp/workspace', 'native', 'uuid-eacces')
@@ -191,7 +269,7 @@ describe('ClaudeTmuxBackend', () => {
 
   describe('sessionExists tri-state', () => {
     it('returns alive when tmux has-session succeeds', async () => {
-      const backend = new ClaudeTmuxBackend();
+      const backend = new ClaudeTmuxBackend(30_000, 0);
       const result = await backend.sessionExists('dev-fizz-top');
       expect(result).toBe('alive');
     });
@@ -203,7 +281,7 @@ describe('ClaudeTmuxBackend', () => {
           return undefined;
         }
       );
-      const backend = new ClaudeTmuxBackend();
+      const backend = new ClaudeTmuxBackend(30_000, 0);
       const result = await backend.sessionExists('dev-fizz-top');
       expect(result).toBe('dead');
     });
@@ -215,7 +293,7 @@ describe('ClaudeTmuxBackend', () => {
           return undefined;
         }
       );
-      const backend = new ClaudeTmuxBackend();
+      const backend = new ClaudeTmuxBackend(30_000, 0);
       const result = await backend.sessionExists('dev-fizz-top');
       expect(result).toBe('unknown');
     });
@@ -230,7 +308,7 @@ describe('ClaudeTmuxBackend', () => {
       }
     }
 
-    const backend = new TestBackend();
+    const backend = new TestBackend(30_000, 0);
     const sendPromise = backend.sendMessage('dev-volibear-top', "echo 'hello from test'");
     await vi.advanceTimersByTimeAsync(225);
     await sendPromise;
