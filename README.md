@@ -135,6 +135,10 @@ The backend task or thread is the durable source of conversation history. There
 is no persistent/disposable session type. An active champion ID is only a registry
 pointer to that backend task.
 
+Names with open durable messages remain reserved after their session record
+is removed. A new task must not inherit an older task's waiting or uncertain
+queue. Inspect that older request; do not cancel or replay it to free a name.
+
 ```bash
 dev-sessions inspect mayor-mid                 # read internalId (the task ID)
 dev-sessions kill mayor-mid
@@ -221,7 +225,9 @@ policy is `skip`; use `--overlap queue` to run one occurrence after the prior ru
 - **Turn detection**: `turn/completed` notification; the gateway also projects global `thread/status/changed` events into the session store
 - **Message history**: Fetched via `thread/read` with `includeTurns: true` — persisted across process restarts
 - **Turn status**: Checked on demand via `thread/resume`; while the gateway runs, event projection keeps stored status current without a later command
-- **Session liveness**: Verified via `thread/list` — checks specific thread ID exists, not just daemon PID
+- **Session liveness**: Status-only `thread/read` checks the exact thread ID.
+  `thread not loaded` is unknown liveness, not proof of a dead task. Inventory
+  preserves the record and queued work; it does not resume threads to list them.
 - **Daemon lifecycle**: Auto-started on first `create --cli codex`, auto-stopped when last Codex session is killed
 
 The gateway owns one long-lived Codex status projector. It does not resume all stored

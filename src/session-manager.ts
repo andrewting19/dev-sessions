@@ -606,7 +606,7 @@ export class SessionManager {
   }
 
   private async claimRequestedChampionId(championId: string): Promise<string> {
-    if (await this.store.getSession(championId)) {
+    if (await this.store.getSession(championId) || this.automation?.reservedSessionIds().includes(championId)) {
       throw new Error(`Champion ID already in use: ${championId}`);
     }
 
@@ -621,11 +621,12 @@ export class SessionManager {
 
   private async findAvailableChampionId(maxAttempts: number = 250): Promise<string> {
     const allBackends = [...this.backends.values()];
+    const reserved = new Set(this.automation?.reservedSessionIds() ?? []);
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const candidate = generateChampionId();
 
-      if (await this.store.getSession(candidate)) {
+      if (reserved.has(candidate) || await this.store.getSession(candidate)) {
         continue;
       }
 

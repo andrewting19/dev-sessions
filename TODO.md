@@ -2,6 +2,15 @@
 
 ## Completed
 
+- [x] Reserve champion IDs with open durable messages, including uncertain
+  delivery, after their session record is removed. New workers cannot inherit
+  an unrelated task's blocked FIFO queue.
+
+- [x] Preserve Codex records when inventory reports `thread not loaded`.
+  Unloaded first-turn sessions are not confirmed dead; retain their queued
+  assignments. Regression checks keep inventory read-only and explicit missing
+  threads distinct.
+
 ### Phase 1: Foundation ✅
 - [x] TypeScript project scaffolding (package.json, tsconfig, vitest, build scripts)
 - [x] Champion ID generation (LoL champion + role, e.g., `fizz-top`)

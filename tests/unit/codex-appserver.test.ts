@@ -924,7 +924,7 @@ describe('CodexAppServerBackend', () => {
           };
         }
 
-        throw new Error(`thread/read failed: thread not loaded: ${request?.threadId}`);
+        throw new Error(`thread/read failed: thread not found: ${request?.threadId}`);
       }
     } satisfies FakeClientScript;
 
@@ -940,6 +940,19 @@ describe('CodexAppServerBackend', () => {
     expect(clients).toHaveLength(2);
     expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/read']);
     expect(clients[1].requests.map((entry) => entry.method)).toEqual(['thread/read']);
+  });
+
+  it('does not classify an unloaded thread as dead or resume it during inventory', async () => {
+    const { backend, daemon, clients } = createHarness([{
+      onRequest: (method) => {
+        expect(method).toBe('thread/read');
+        throw new Error('thread/read failed: thread not loaded: thr_fresh');
+      }
+    }]);
+    await expect(backend.sessionExists('fizz-top', daemon.server.pid, daemon.server.port, 'thr_fresh'))
+      .rejects.toThrow('thread not loaded');
+    expect(clients[0].requests.map((entry) => entry.method)).toEqual(['thread/read']);
+    expect(daemon.resetCalls).toEqual([]);
   });
 
   it('archives threads on kill and delegates shared daemon lifecycle checks', async () => {

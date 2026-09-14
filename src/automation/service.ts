@@ -115,6 +115,10 @@ export class AutomationService {
     return this.store.getMessage(id);
   }
 
+  reservedSessionIds(): string[] {
+    return this.store.listTargetSessionIdsWithOpenMessages();
+  }
+
   listMessages(targetSessionId?: string, statuses?: MessageStatus[], limit?: number): QueuedMessage[] {
     return this.store.listMessages({ targetSessionId, statuses, limit });
   }

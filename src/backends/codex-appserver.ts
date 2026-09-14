@@ -1910,6 +1910,12 @@ export class CodexAppServerBackend {
       });
       return true;
     } catch (error: unknown) {
+      // A newly created thread can be unloaded before its first turn creates
+      // a rollout. This is not evidence that its queued assignment is dead.
+      // Propagate unknown liveness so inventory preserves the session record.
+      if (error instanceof Error && /thread not loaded/i.test(error.message)) {
+        throw error;
+      }
       if (this.isThreadReadNotFoundError(error)) {
         return false;
       }

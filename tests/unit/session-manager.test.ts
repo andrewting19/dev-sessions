@@ -11,6 +11,9 @@ import {
   CodexTurnWaitResult
 } from '../../src/backends/codex-appserver';
 import { toTmuxSessionName } from '../../src/champion-ids';
+import * as championIds from '../../src/champion-ids';
+import { AutomationStore } from '../../src/automation/store';
+import { AutomationService } from '../../src/automation/service';
 import { sanitizeWorkspacePath } from '../../src/transcript/claude-parser';
 import { SessionManager } from '../../src/session-manager';
 import { SessionStore } from '../../src/session-store';
@@ -886,6 +889,46 @@ describe('SessionManager', () => {
     expect(listed.map((s) => s.championId)).toContain(session.championId);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(session.championId));
     warnSpy.mockRestore();
+  });
+
+  it('preserves an unloaded Codex worker for its first queued assignment', async () => {
+    class UnloadedBackend extends FakeCodexBackend {
+      override async sessionExists(): Promise<boolean> {
+        throw new Error('thread/read failed: thread not loaded: thr_fresh');
+      }
+    }
+    const unloadedManager = new SessionManager(store, new ClaudeBackend(new FakeClaudeBackend()), new CodexBackend(new UnloadedBackend()));
+    const session = await unloadedManager.createSession({ path: tmpDir, cli: 'codex' });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect((await unloadedManager.listSessions()).map(s => s.championId)).toContain(session.championId);
+      expect((await store.getSession(session.championId))?.status).toBe('active');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it.each(['waiting', 'delivery_uncertain'] as const)('reserves removed worker names with %s messages', async (status) => {
+    const queue = new AutomationStore(path.join(tmpDir, 'queue.sqlite'));
+    manager.attachAutomation(new AutomationService(queue, manager));
+    const message = queue.enqueueMessage('zilean-jg', 'Original task; do not replay');
+    if (status === 'delivery_uncertain') {
+      queue.claimDispatchableMessages('test-worker', 30000);
+      queue.markMessageDeliveryUncertain(message.id, 'Lost receipt');
+    }
+    const generator = vi.spyOn(championIds, 'generateChampionId')
+      .mockReturnValueOnce('zilean-jg').mockReturnValueOnce('fizz-top');
+    try {
+      await expect(manager.createSession({ path: tmpDir, championId: 'zilean-jg' }))
+        .rejects.toThrow('Champion ID already in use');
+      const next = await manager.createSession({ path: tmpDir });
+      expect(next.championId).toBe('fizz-top');
+      expect(queue.getMessage(message.id)?.status).toBe(status);
+      expect(queue.getMessage(message.id)?.targetSessionId).toBe('zilean-jg');
+    } finally {
+      generator.mockRestore();
+      queue.close();
+    }
   });
 
   it('limits concurrent liveness checks for a large session registry', async () => {
