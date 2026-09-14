@@ -908,25 +908,44 @@ describe('SessionManager', () => {
     }
   });
 
-  it.each(['waiting', 'delivery_uncertain'] as const)('reserves removed worker names with %s messages', async (status) => {
+  it.each(['waiting', 'dispatching', 'delivered', 'delivery_uncertain'] as const)('reserves removed worker names with %s messages', async (status) => {
     const queue = new AutomationStore(path.join(tmpDir, 'queue.sqlite'));
     manager.attachAutomation(new AutomationService(queue, manager));
     const message = queue.enqueueMessage('zilean-jg', 'Original task; do not replay');
-    if (status === 'delivery_uncertain') {
+    if (status !== 'waiting') {
       queue.claimDispatchableMessages('test-worker', 30000);
-      queue.markMessageDeliveryUncertain(message.id, 'Lost receipt');
+      if (status === 'delivery_uncertain') queue.markMessageDeliveryUncertain(message.id, 'Lost receipt');
+      if (status === 'delivered') queue.markMessageDelivered(message.id, 'original-turn');
     }
     const generator = vi.spyOn(championIds, 'generateChampionId')
       .mockReturnValueOnce('zilean-jg').mockReturnValueOnce('fizz-top');
     try {
       await expect(manager.createSession({ path: tmpDir, championId: 'zilean-jg' }))
         .rejects.toThrow('Champion ID already in use');
+      await expect(manager.resumeSession({ path: tmpDir, cli: 'claude', taskId: 'old-task', championId: 'zilean-jg' }))
+        .rejects.toThrow('Champion ID already in use');
+      expect(backend.createCalls).toHaveLength(0);
+      expect(backend.resumeCalls).toHaveLength(0);
       const next = await manager.createSession({ path: tmpDir });
       expect(next.championId).toBe('fizz-top');
       expect(queue.getMessage(message.id)?.status).toBe(status);
       expect(queue.getMessage(message.id)?.targetSessionId).toBe('zilean-jg');
     } finally {
       generator.mockRestore();
+      queue.close();
+    }
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)('allows a name after its last open message becomes %s', async (status) => {
+    const queue = new AutomationStore(path.join(tmpDir, 'queue.sqlite'));
+    manager.attachAutomation(new AutomationService(queue, manager));
+    try {
+      const message = queue.enqueueMessage('zilean-jg', 'Original task');
+      queue.markMessageTerminal(message.id, status);
+      expect(await manager.isChampionIdReserved('zilean-jg')).toBe(false);
+      expect((await manager.createSession({ path: tmpDir, championId: 'zilean-jg' })).championId).toBe('zilean-jg');
+      expect(queue.getMessage(message.id)?.status).toBe(status);
+    } finally {
       queue.close();
     }
   });

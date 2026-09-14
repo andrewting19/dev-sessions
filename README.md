@@ -138,6 +138,8 @@ pointer to that backend task.
 Names with open durable messages remain reserved after their session record
 is removed. A new task must not inherit an older task's waiting or uncertain
 queue. Inspect that older request; do not cancel or replay it to free a name.
+Local and remote `create` and `resume` check these reservations. For remote
+tasks, update both the routing machine and the target host to get both checks.
 
 ```bash
 dev-sessions inspect mayor-mid                 # read internalId (the task ID)

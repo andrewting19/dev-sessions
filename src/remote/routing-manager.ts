@@ -161,38 +161,15 @@ export class RoutingSessionManager {
       );
     }
 
-    // The local registry spans all hosts, so the ID is allocated here and
-    // handed to the remote — this is what keeps IDs unique across hosts.
-    let remoteSession: StoredSession | undefined;
-    for (let attempt = 0; attempt < CHAMPION_ID_ALLOCATION_ATTEMPTS && !remoteSession; attempt += 1) {
-      const championId = options.championId ?? generateChampionId();
-      if (options.championId === undefined && (await this.store.getSession(championId))) {
-        continue;
-      }
-
-      try {
-        remoteSession = await client.create({
-          championId,
-          path: options.path,
-          description: options.description,
-          cli: options.cli ?? 'claude',
-          mode: options.mode ?? 'native',
-          model: options.model
-        });
-      } catch (error: unknown) {
-        const takenRemotely =
-          options.championId === undefined &&
-          error instanceof RemoteCommandError &&
-          /already in use/i.test(error.message);
-        if (!takenRemotely) {
-          throw error;
-        }
-      }
-    }
-
-    if (!remoteSession) {
-      throw new Error(`Unable to allocate a champion ID free on both this machine and ${host}`);
-    }
+    const remoteSession = await this.startRemoteWithAvailableId(host, options.championId,
+      championId => client.create({
+        championId,
+        path: options.path,
+        description: options.description,
+        cli: options.cli ?? 'claude',
+        mode: options.mode ?? 'native',
+        model: options.model
+      }));
 
     const stub: StoredSession = { ...remoteSession, host, remoteBin };
     await this.store.setRemoteBin(host, remoteBin);
@@ -204,11 +181,37 @@ export class RoutingSessionManager {
     if (!options.host) return this.local.resumeTask(options);
     const remoteBin = resolveRemoteBin(this.env);
     const client = this.clientFactory(options.host, remoteBin);
-    const remote = await client.resume({ ...options, host: undefined });
+    const remote = await this.startRemoteWithAvailableId(options.host, options.championId,
+      championId => client.resume({ ...options, host: undefined, championId }));
     const stub = { ...remote, host: options.host, remoteBin };
     await this.store.setRemoteBin(options.host, remoteBin);
     await this.store.upsertSession(stub);
     return stub;
+  }
+
+  private async startRemoteWithAvailableId(
+    host: string,
+    requestedId: string | undefined,
+    start: (championId: string) => Promise<StoredSession>
+  ): Promise<StoredSession> {
+    // Allocate on the routing host for both create and resume. The remote
+    // checks its own records and queue before starting the backend task.
+    for (let attempt = 0; attempt < CHAMPION_ID_ALLOCATION_ATTEMPTS; attempt += 1) {
+      const championId = requestedId ?? generateChampionId();
+      if (await this.local.isChampionIdReserved(championId)) {
+        if (requestedId !== undefined) throw new Error(`Champion ID already in use: ${championId}`);
+        continue;
+      }
+      try {
+        return await start(championId);
+      } catch (error: unknown) {
+        // A transport error can hide an accepted start. Retry only a confirmed
+        // name collision, and only when the caller did not select that name.
+        if (requestedId !== undefined || !(error instanceof RemoteCommandError) ||
+            !/already in use/i.test(error.message)) throw error;
+      }
+    }
+    throw new Error(`Unable to allocate a champion ID free on both this machine and ${host}`);
   }
 
   async sendMessage(

@@ -2,6 +2,11 @@
 
 ## Completed
 
+- [x] Apply name reservations to remote create and resume on the routing host.
+  Reject explicit collisions before starting a remote task. Retry generated
+  names only after a confirmed remote collision, not a transport failure.
+  Cover all four open-message states and reuse after terminal states.
+
 - [x] Reserve champion IDs with open durable messages, including uncertain
   delivery, after their session record is removed. New workers cannot inherit
   an unrelated task's blocked FIFO queue.

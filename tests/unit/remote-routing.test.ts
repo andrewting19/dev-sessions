@@ -8,6 +8,8 @@ import { SshTransportError } from '../../src/remote/ssh-runner';
 import type { SessionManager } from '../../src/session-manager';
 import { SessionStore } from '../../src/session-store';
 import { StoredSession } from '../../src/types';
+import * as championIds from '../../src/champion-ids';
+import { AutomationStore } from '../../src/automation/store';
 
 function mockSession(championId: string, overrides: Partial<StoredSession> = {}): StoredSession {
   const now = '2026-07-01T00:00:00.000Z';
@@ -100,6 +102,7 @@ function createFakeRemote(): FakeRemote {
 
 function createLocalManagerMock(): SessionManager {
   return {
+    isChampionIdReserved: vi.fn().mockResolvedValue(false),
     createSession: vi.fn(async () => mockSession('local-one')),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     killSession: vi.fn().mockResolvedValue(undefined),
@@ -145,6 +148,7 @@ describe('RoutingSessionManager', () => {
     storeDir = await mkdtemp(path.join(os.tmpdir(), 'ds-routing-test-'));
     store = new SessionStore(path.join(storeDir, 'sessions.json'));
     local = createLocalManagerMock();
+    vi.mocked(local.isChampionIdReserved).mockImplementation(async id => Boolean(await store.getSession(id)));
     remote = createFakeRemote();
     warnings = [];
     clientFactoryCalls = [];
@@ -194,6 +198,63 @@ describe('RoutingSessionManager', () => {
       championId: 'mayor-mid', internalId: 'thread-123', host: 'buildbox'
     });
     expect(await store.getSession('mayor-mid')).toMatchObject({ internalId: 'thread-123', host: 'buildbox' });
+  });
+
+  describe.each(['create', 'resume'] as const)('%s name safety', operation => {
+    const options = { host: 'buildbox', path: '/tmp/workspace', taskId: 'thread-123' };
+    const start = (manager: RoutingSessionManager, championId?: string) => operation === 'create'
+      ? manager.createSession({ ...options, championId })
+      : manager.resumeTask({ ...options, championId });
+
+    it.each(['waiting', 'dispatching', 'delivered', 'delivery_uncertain'] as const)(
+      'does not overwrite a local %s queue with a remote worker', async status => {
+        const queue = new AutomationStore(path.join(storeDir, 'queue.sqlite'));
+        const generator = vi.spyOn(championIds, 'generateChampionId')
+          .mockReturnValueOnce('reserved-mid').mockReturnValueOnce('fresh-mid');
+        try {
+          const message = queue.enqueueMessage('reserved-mid', 'Preserve this task');
+          if (status !== 'waiting') queue.claimDispatchableMessages('test-worker', 30000);
+          if (status === 'delivered') queue.markMessageDelivered(message.id, 'original-turn');
+          if (status === 'delivery_uncertain') queue.markMessageDeliveryUncertain(message.id, 'lost receipt');
+          vi.mocked(local.isChampionIdReserved).mockImplementation(async id =>
+            Boolean(await store.getSession(id)) || queue.listTargetSessionIdsWithOpenMessages().includes(id));
+          await expect(start(manager, 'reserved-mid')).rejects.toThrow('Champion ID already in use');
+          expect(remote[operation]).not.toHaveBeenCalled();
+          const session = await start(manager);
+          expect(session.championId).toBe('fresh-mid');
+          expect(remote[operation]).toHaveBeenCalledTimes(1);
+          expect(await store.getSession('reserved-mid')).toBeUndefined();
+          expect(queue.getMessage(message.id)).toMatchObject({ targetSessionId: 'reserved-mid', status });
+        } finally {
+          generator.mockRestore();
+          queue.close();
+        }
+      });
+
+    it('rejects an explicit name already present in the routing registry', async () => {
+      const existing = mockSession('taken-mid');
+      await store.upsertSession(existing);
+      await expect(start(manager, 'taken-mid')).rejects.toThrow('Champion ID already in use');
+      expect(remote[operation]).not.toHaveBeenCalled();
+      expect(await store.getSession('taken-mid')).toEqual(existing);
+    });
+
+    it('retries a confirmed remote collision with a fresh generated name', async () => {
+      const generator = vi.spyOn(championIds, 'generateChampionId')
+        .mockReturnValueOnce('taken-mid').mockReturnValueOnce('fresh-mid');
+      try {
+        remote[operation].mockRejectedValueOnce(new RemoteCommandError('Champion ID already in use: taken-mid', 1));
+        expect((await start(manager)).championId).toBe('fresh-mid');
+        expect(remote[operation]).toHaveBeenCalledTimes(2);
+      } finally { generator.mockRestore(); }
+    });
+
+    it('does not retry a failed remote transport', async () => {
+      remote[operation].mockRejectedValueOnce(new Error('SSH disconnected after send'));
+      await expect(start(manager)).rejects.toThrow('SSH disconnected after send');
+      expect(remote[operation]).toHaveBeenCalledTimes(1);
+      expect(await store.listSessions()).toEqual([]);
+    });
   });
 
   it('warns when the remote version is incompatible but continues', async () => {
