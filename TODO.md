@@ -2,6 +2,10 @@
 
 ## Completed
 
+- [x] Re-verify end to end with Claude Code 2.1.321 and Codex CLI 0.167.0
+  (native and Docker gateway). Hide Claude tool results and meta entries
+  from `logs` human turns. Prepare 0.7.2.
+
 - [x] Apply name reservations to remote create and resume on the routing host.
   Reject explicit collisions before starting a remote task. Retry generated
   names only after a confirmed remote collision, not a transport failure.
