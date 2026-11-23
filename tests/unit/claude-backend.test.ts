@@ -9,6 +9,7 @@ vi.mock('../../src/transcript/claude-parser', () => ({
   countHumanMessages: vi.fn().mockReturnValue(0),
   countSystemEntries: vi.fn().mockReturnValue(0),
   extractTextBlocks: vi.fn().mockReturnValue([]),
+  extractHumanTextBlocks: vi.fn().mockReturnValue([]),
   getAssistantTextBlocks: vi.fn().mockReturnValue([]),
   inferTranscriptStatus: vi.fn().mockReturnValue('idle')
 }));

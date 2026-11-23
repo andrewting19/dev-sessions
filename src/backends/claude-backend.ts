@@ -4,6 +4,7 @@ import { toTmuxSessionName } from '../champion-ids';
 import {
   countHumanMessages,
   countSystemEntries,
+  extractHumanTextBlocks,
   extractTextBlocks,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
@@ -181,7 +182,7 @@ export class ClaudeBackend implements Backend {
     for (const entry of entries) {
       const type = entry.type?.toLowerCase();
       if (type === 'human' || type === 'user') {
-        const text = extractTextBlocks(entry.message?.content).join('\n\n');
+        const text = extractHumanTextBlocks(entry).join('\n\n');
         if (text) {
           turns.push({ role: 'human', text });
         }

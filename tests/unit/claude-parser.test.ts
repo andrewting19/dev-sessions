@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   countAssistantMessages,
   countHumanMessages,
+  extractHumanTextBlocks,
   getAssistantTextBlocks,
   getClaudeTranscriptPath,
   hasAssistantResponseAfterLatestUser,
@@ -129,5 +130,31 @@ describe('sanitizeWorkspacePath symlink resolution', () => {
 
   it('falls back to the resolved path when the workspace does not exist', () => {
     expect(sanitizeWorkspacePath('/definitely/not/a/real/dir')).toBe('-definitely-not-a-real-dir');
+  });
+
+  it('keeps typed human text but drops tool results and meta entries', () => {
+    expect(extractHumanTextBlocks({ type: 'user', message: { content: 'Fix the bug' } }))
+      .toEqual(['Fix the bug']);
+    expect(extractHumanTextBlocks({
+      type: 'user',
+      message: {
+        content: [{ tool_use_id: 'toolu_1', type: 'tool_result', content: 'hi', is_error: false }]
+      },
+      toolUseResult: { stdout: 'hi' }
+    })).toEqual([]);
+    expect(extractHumanTextBlocks({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_2', content: [{ type: 'text', text: 'File created' }] },
+          { type: 'text', text: 'Also add a test' }
+        ]
+      }
+    })).toEqual(['Also add a test']);
+    expect(extractHumanTextBlocks({
+      type: 'user',
+      isMeta: true,
+      message: { content: '<local-command-caveat>ignore</local-command-caveat>' }
+    })).toEqual([]);
   });
 });

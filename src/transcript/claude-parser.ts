@@ -111,6 +111,29 @@ export function extractTextBlocks(content: unknown): string[] {
   return [];
 }
 
+function isToolResultBlock(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    (value as Record<string, unknown>).type === 'tool_result'
+  );
+}
+
+// Text that a person sent in a user entry. Claude Code also writes tool results
+// and injected meta messages as user entries; those are not human turns.
+export function extractHumanTextBlocks(entry: ClaudeTranscriptEntry): string[] {
+  if (entry.isMeta === true) {
+    return [];
+  }
+
+  const content = entry.message?.content;
+  if (Array.isArray(content)) {
+    return extractTextBlocks(content.filter((item) => !isToolResultBlock(item)));
+  }
+
+  return extractTextBlocks(content);
+}
+
 function isHumanMessage(entry: ClaudeTranscriptEntry): boolean {
   const normalizedType = entry.type?.toLowerCase();
   return normalizedType === 'human' || normalizedType === 'user';
